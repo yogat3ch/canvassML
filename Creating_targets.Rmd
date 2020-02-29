@@ -1,0 +1,1027 @@
+---
+title: "CanvassML: An application of machine learning to predict campaign support"
+author: "Stephen Holsenbeck"
+date: '`r format(Sys.time(), "%Y-%m-%d")`'
+output: 
+  html_document:
+    self_contained: yes
+    theme: cerulean
+    code_folding: hide
+    toc_float: TRUE
+    df_print: paged
+    toc: TRUE
+---
+
+```{r setup, include=FALSE}
+if (!interactive()) {
+thm = knitr::knit_theme$get("bright")  # parse the theme to a list
+knitr::knit_theme$set(thm)
+}
+# Knitr Options
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, cache = TRUE, fig.align = 'center', fig.height = 5, fig.width = 7.5, tidy = TRUE, tidy.opts = list(width.cutoff = 80))
+options(scipen = 12)
+# Make reproducible
+set.seed(1)
+library(tidyverse)
+library(dtplyr)
+library(magrittr)
+here::here(path = "~/Volunteering/Andrew Yang Campaign/yang_success_mod/")
+```
+# Intro
+All code for this project is hosted at [github.com/yogat3ch/canvassML](http://github.com/yogat3ch/canvassML)
+
+## Purpose and Description
+This algorithm builds from previous work with spatial data and canvassing from 2018 [See 'My City in Time and Space'](https://rpubs.com/yogat3ch/ppua5302p2).  The project was inspired by the desire to assist the Andrew Yang Campaign with optimization of canvassing efforts. 
+<br>
+
+#### On delegate allocation
+Massachusetts and New Hampshire use a threshold-based delegate allocation system. Fifteen percent of the vote of a congressional district (CD) must be acquired to win a portion of that CDs delegates, split proportionally between other threshold crossing candidates percentages. State delegates are similar, but the threshold is applied at the state level, ie fifteen percent of the state votes must be acquired to receive a proportional amount of the state delegates.
+<br>
+
+### Model description
+The model uses two types of predictive variables: <strong>specific and demographic.</strong><br>
+The <strong>specific predictors</strong> are comprised of aggregate numbers of supporters who have already affiliated themselves as supporters of the campaign. These are typically registered volunteers or others who've expressed their commitment to vote. These numbers are counted towards the vote thresholds needed for a given congressional district/state. A campaign might also use mailing list subscribers aggregated by zip code. 
+
+The <strong>demographic predictors</strong> are comprised of census data. These data sources are used to characterize the demographic make-up of zip codes, and act as predictors for canvassing success per zip code.
+Together, these data can be used as predictors in a predictive algorithm to be trained on areas where a reliable outcome variable is available, and tested on areas yet to be targeted for canvassing.
+
+In this example, Massachusetts zip codes will be used as the target and data from New Hampshire zip codes will be used as the training set. Adjacent states within the same ["political region"](https://www.businessinsider.com/the-11-nations-of-the-united-states-2015-7) are likely to yield more accurate cross-state comparisons than those with large geographic separations.
+
+### Outcome
+New Hampshire 2020 primary election data are originally used as the response variable in the training data. This is possible because the primary has not yet taken place in an adjacent state, MA in this case. If voter data is not available, aggregate success rates from existing canvass efforts for an area might also serve as an outcome variable if a vote has not taken place. Polling results, if available aggregated by the required geographies, could also serve as the outcome variable. 
+
+The table below was copied from [WMUR](https://elections.ap.org/wmur/results/2020-02-11/state/NH/race/P/raceid/32115) using Chrome's Developer tools to an HTML file, and can be parsed using `rvest`, `xml2`, and the `tidyverse` (specifically `dplyr`, `stringr` and `readr`). 
+
+```{r 'Load primary rv', eval = F}
+.htm <- xml2::read_html("data/nh_primary_20.html")
+.htm %>% 
+  rvest::html_node("table") %>% 
+  rvest::html_table() %>% 
+  # transform all but the township names to numbers
+  dplyr::mutate_at(vars(- one_of("Townships")), ~{as.numeric(stringr::str_replace(., "\\,", ""))}) %>% 
+  # save as CSV for easier future read-in
+  readr::write_csv("data/nh_primary_20.csv")
+```
+However, better results, aggregated by precinct were made available by the New Hampshire Secretary of State. This data is cleaned and used as the outcome variable in the training set for model building.
+```{r 'Load 2020 NH Primary Results'}
+rv <- list(ma = NA, nh = NA)
+.candidate <- 'Yang'
+source("nh_primary_20.R")
+rv$nh <- .per_support
+```
+
+#### General Predictors: Census Data {#census}
+Census data obtained from a custom query on [American Fact Finder](https://factfinder.census.gov/faces/nav/jsf/pages/download_center.xhtml#none) for all zip codes pertaining to the two geographies (MA, NH) are used as predictors. Here is a list of the tables used. Of the predictors these tables produced, the number was narrowed by hand selection for their perceived influence on positive appeal of Yang's campaign by dedicated volunteers familiar with the campaign:
+
+* S0101 - AGE AND SEX
+* S1101 - HOUSEHOLDS AND FAMILIES
+* S1501 - EDUCATIONAL ATTAINMENT
+* S1701 - POVERTY STATUS IN THE PAST 12 MONTHS
+* S1902 - MEAN INCOME IN THE PAST 12 MONTHS (IN 2017 INFLATION-ADJUSTED DOLLARS)
+* S1903 - MEDIAN INCOME IN THE PAST 12 MONTHS (IN 2017 INFLATION-ADJUSTED DOLLARS)
+* S2301 - EMPLOYMENT STATUS
+* S2401 - OCCUPATION BY SEX FOR THE CIVILIAN EMPLOYED POPULATION 16 YEARS AND OVER
+* S2502 - DEMOGRAPHIC CHARACTERISTICS FOR OCCUPIED HOUSING UNITS
+* S2801 - TYPES OF COMPUTERS AND INTERNET SUBSCRIPTIONS
+* B01002 - MEDIAN AGE BY SEX
+* B02001 - RACE
+These values are loaded, cleaned and joined in the <a href="#loadcensus">Census Data section</a>
+
+#### Specific Predictors: Existing Support {#support}
+Campaigns have existing records of their strong supporter base in most areas. These are ideally aggregated by zip code as this is the geographic region most often requested in web-based form.
+<em style="font-size:.8em">Note: chunks not echoed to hide the sheet links</em>
+```{r 'YG Hustle', echo = F, results='hide'}
+support <- list()
+suppressMessages({support$ma <- googlesheets4::sheets_read("https://docs.google.com/spreadsheets/d/1ty8WbMT6uVrTtiKcywOfNQreNGfDisNA1i1ySzzzYyI/edit#gid=0", col_names = c("cnty", "zip", "cty", "Number"), col_types = c("cccn"), skip = 1) %>% replace_na(list(Number = 0))
+support$nh <- googlesheets4::sheets_read("https://docs.google.com/spreadsheets/d/1hotpg798HpV9Xp60l_M3GekMaut6AVVBXntfcMNtPc4/edit#gid=0", col_names = c("cnty", "zip", "cty", "Number"), col_types = c("cccn"), skip = 1) %>% 
+  replace_na(list(Number = 0))
+})
+```
+
+#### Outcomes Elaborated {#outcomes-elaborated}
+While the proximal outcome is the expected rates of success for canvassers in a specific zip code, the ultimate outcome is winning delegate votes. In order to ascertain threshold levels of the number of votes needed to obtain delegates as goals for canvassers, we can use metrics of primary voter turnout from previous primaries.
+
+Voting turnout metrics from the 2016 election:
+
+  - [NH](https://nh.electionstats.com/elections/view/81936/)
+  - [MA](https://electionstats.state.ma.us/elections/view/126693/filter_by_county:Barnstable)
+
+If an algorithm such as this is being built for a candidate that ran in a previous primary (as Bernie has in this primary), these previous voter turnout results might even serve as a solid specific predictor in the model, or might be derived into a proxy outcome variable after being graduated/scaled based on current support metrics recorded from polling or canvassing efforts using an equation something like the following:
+$$\frac{\text{# of Expected Supporters per Zip Code}}{\text{# of Dems voting in previous Primary}} $$
+For this exploration we'll be using the Democratic primary voter numbers from 2016 both for setting thresholds needed to receive delegate votes, and as a predictor variable in the model.
+```{r 'Source 2016 primary results by Precinct and City'}
+party_aff <- list()
+# Read MA metrics
+party_aff$ma <- read_csv("data/ma_primary_16.csv")
+# Read NH metrics
+party_aff$nh  <- read_csv("data/nh_primary_16.csv")
+```
+
+# Load Data for Models
+Load the congressional, precinct, and zip code spatial data. 
+Unzip the shapefiles.
+Links:
+
+  - [NH Political Districts (Wards/Precincts)](https://github.com/nvkelso/election-geodata/tree/master/data)
+  - [NH Congressional Districts](https://hub.arcgis.com/datasets/NHGRANIT::new-hampshire-congressional-district-boundaries-2012)
+  - [Zip code shapefiles for the whole country (from which NH areas are extracted)](https://www.census.gov/geographies/mapping-files/time-series/geo/carto-boundary-file.html)
+
+```{r 'unzip shape files', eval = F}
+dir.create("data/shapefiles/ma")
+unzip("data/zipcodes_ma.zip", exdir = "data/shapefiles/ma")
+unzip("data/CD_ma.zip", exdir = "data/shapefiles/ma")
+unzip("data/census_tracts_ma.zip", exdir = "data/shapefiles/ma")
+unzip("data/wardsprecincts_ma.zip", exdir = "data/shapefiles/ma")
+unzip("data/shapefiles/NHPolitDists.zip", exdir = "data/shapefiles/nh")
+unzip("data/shapefiles/all_zips.zip", exdir = "data/shapefiles/nh")
+unzip("data/shapefiles/NH_CD_12.zip", exdir = "data/shapefiles/nh")
+
+```
+
+We will need a list of NH Zip codes to extract out the appropriate zip codes for NH from this file.
+```{r 'Get a list of zip codes'}
+.htm <- xml2::read_html("https://www.zipcodestogo.com/New%20Hampshire/")
+.zip <- .htm %>%
+  rvest::html_node(css = ".inner_table") %>%
+  rvest::html_table() %>% 
+  {set_colnames(., .[2,,drop = T])} %>% 
+  magrittr::extract(- c(1,2), )
+```
+
+Load the shapefiles
+```{r 'load shapefiles'}
+shp <- list(ma = NULL, nh = NULL)
+shp$ma$zip <- sf::st_read("data/shapefiles/ma/ZIPCODES_NT_POLY.shp", quiet = T)
+shp$ma$wp <- sf::st_read("data/shapefiles/ma/WARDSPRECINCTS_POLY.shp", quiet = T)
+shp$ma$cd <- sf::st_read("data/shapefiles/ma/Massachusetts_U.S._Congressional_Districts.shp", quiet = T)
+shp$nh$zip <- sf::st_read("data/shapefiles/nh/cb_2018_us_zcta510_500k.shp", quiet = T)
+shp$nh$wp <- sf::st_read("data/shapefiles/nh/NHPolitDists.shp", quiet = T)
+shp$nh$cd <- sf::st_read("data/shapefiles/nh/New_Hampshire_Congressional_District_Boundaries__2012.shp", quiet = T)
+```
+Filter the NH zip codes
+```{r 'Filter by NH Zip codes'}
+shp$nh$zip %<>% 
+  filter(GEOID10 %in% .zip$`Zip Code`) %>% 
+  select(zip = GEOID10,
+         geometry)
+```
+
+New `sf` objects are `data.frames` with a geometry feature and are therefore amenable to joining. The supporters per zip code can be joined.
+```{r 'join shapefiles with supporters'}
+# join with support data
+shp$ma$zip <- left_join(shp$ma$zip, 
+                  support$ma %>% 
+                    select(zip, `Number`),
+                  by = c(POSTCODE = "zip")) %>% 
+  rename(zip = "POSTCODE")
+shp$nh$zip <- left_join(shp$nh$zip, 
+                  support$nh %>% 
+                    select(zip, `Number`),
+                  by = "zip")
+# summary to ensure no NAs after join
+```
+
+### Outcome - predicting support
+The outcome we intend to predict is the **expected support as a percentage of voting Democrats.**
+Because this analysis was inspired by Andrew Yang's campaign for presidency, we'll compute this outcome metric based on his New Hampshire results. Any candidate could be subbed in here as long as the anticipated supporter numbers in the <a href="#support">Existing Supporters section</a> are loaded for the particular candidate, otherwise predictions will be off.
+The steps necessary to derive this metric will require the following process:
+
+1. The NH Primary 2020 data is by township, so the townships with more than a single precinct (as per the W/P shapefile) will need to be divided by the number of precincts as a means of estimating the contribution of each precinct. 
+2. The NH primary data can then be joined with the W/P shapefile. This will involve:
+ 2a. Mutate a new WP_NAME column with only the name of the township from the WARD column.
+ 2b. Join the NH Primary results (cols for all candidates at this point and total votes) with the W/P shapefile by WP_NAME
+ 2c. If there are NA's resulting, use fuzzy join to reconcile differences manually (similar to above).
+2. Aggregate these values at the W/P level to the zip code and the congressional district level via the method described in the section below.
+3. Compute the percent of support as described in the <a href="#outcomes-elaborated">outcomes elaborated section</a>
+
+### Derive Zip Code Aggreages {#aggregates}
+The 2016 Primary Election provides the total number of expected voters likely to turn out in the 2020 election. This feature can serve as a good predictor and can be used to set canvassing targets for MA where the primary has not taken place. 
+
+To create this feature will require the following steps:
+
+1. Join the voting district shapefiles with the 2016 Primary voter data
+2. Compute the centroids of the geometries
+3. Find the Euclidean distance of each precinct centroid to the zip centroids.
+4. Filter the top 20 closest precincts to each zip centroid
+5. Determine which have actual overlap with the zip code, and filter accordingly.
+6. Determine the proportion of zip code area that intersects with the precincts ie
+$$\frac{\text{W/P area intersecting with zip area}}{\text{Total W/P area}}$$
+7. Multiple percentages by total for the W/P, and aggregate the resulting values for all intersecting W/Ps for a given zip code. 
+8. Finally, sum the total voters per congressional district based on the W/Ps contained within.
+
+
+#### 1: Joins
+The *2016 Primary Voting Totals* in the `party_aff` object and the response variable, the *2020 Primary Results for NH* in the `rv` object need to be joined to the shapefiles.
+
+##### 1: New Hampshire
+```{r 'Join Shapefile with Voting Totals for NH'}
+.test <- left_join(shp$nh$wp %>% 
+            mutate_at(vars(WARD), ~str_replace(., "\\s\\-","")) %>% 
+            mutate_at(vars(WARD), ~str_replace(., "\\sEntire","")),
+          party_aff$nh %>% 
+            select( - Regular, - Absentee),
+          by = c(WARD = "City.Town", COUNTY = "County"))
+.test_na <- fuzzyjoin::stringdist_join(
+  .test %>% filter(is.na(Total)),
+  party_aff$nh %>% 
+            select( - Regular, - Absentee),
+  by = c(WARD = "City.Town", COUNTY = "County"),
+  mode = "left",
+  method = "jw",
+  distance_col = "dcol"
+) %>% arrange(WARD.dcol)
+# Split each of the missing matches up, and view them 1 by 1 to select the right match by hand
+.test_na <- unique(.test_na$WARD) %>% purrr::map(~{filter(.test_na, WARD == .x)})
+# Extract the entry that most closely corresponds (hand selected)
+.test_na$ind <-  c(`1` = 1, `2` = 1, `3` = 1, `4` = 2, `5` = 1, `6` = 1, `7` = 1, `8` = 1, `9` = 1, `10` = 2, `11` = 2, `12` = 2, `13` = 2, `14` = 3)
+# Loop and extract the appropriate row. For Derry, the ward that has been split into 4 wards (or vice versa), divide the party_aff data by 4 to match the 4 wards in the shapefile
+.test_na$out <- purrr::map2(.test_na[1:length(.test_na$ind)], .test_na$ind, ~{
+  .out <- .x %>%
+    magrittr::extract(.y,)
+  })
+# Bind the hand selected joins and remove extra cols such that it matches .test
+.test_na$out <- do.call(rbind.data.frame, .test_na$out) %>% 
+  select(- Total.x, - City.Town, - County) %>% 
+  select(- matches("dcol")) %>% 
+  rename(Total = "Total.y")
+# Loop over test$Total to find the NA values and replace them with the hand selected values
+.test$Total <- purrr::map2_dbl(.test$Total, .test$WARD,~{
+  if (is.na(.x)) {
+    .x <- .test_na$out[.test_na$out$WARD == .y, "Total", drop = T]
+  }
+  .x
+})
+# Overwrite the original object
+shp$nh$wp <- .test
+```
+Somersworth Ward 3 appears to have two different, non-contiguous sections with identical names. We want unique names for each ward so let's rename the WARD and nameward for this section.
+```{r 'Make unique ward names for NH'}
+# The index number of the entry
+(.x <- shp$nh$wp %>% extract2("WARD") %>% anyDuplicated())
+# Append a -2 to indicate the non-contiguous region
+shp$nh$wp[.x, c("WARD")] <- paste0(shp$nh$wp[.x, c("WARD"), drop = T], "-2")
+# make an identically named column to the ma list
+shp$nh$wp$WP_NAME <- shp$nh$wp[, c("WARD"), drop = T]
+```
+Now to join the New Hampshire 2020 Primary results
+```{r 'Join 2020 NH Primary Results'}
+.test <- left_join(
+  shp$nh$wp,
+  rv$nh,
+  by = "WP_NAME"
+)
+# How many unsuccessful matches in the join? 
+summary(.test$support)
+```
+```{r 'Fuzzyjoin 2020 NH Primary Results'}
+.test_na <- fuzzyjoin::stringdist_join(
+  .test %>% filter(is.na(support_20)),
+  rv$nh,
+  by = "WP_NAME",
+  mode = "left",
+  method = "jw",
+  distance_col = "dcol"
+) %>% arrange(dcol)
+# Split each of the missing matches up, and view them 1 by 1 to select the right match by hand
+.test_na <- unique(.test_na$WP_NAME.x) %>% purrr::map(~{filter(.test_na, WP_NAME.x == .x) %>% head()})
+# Extract the entry that most closely corresponds (hand selected)
+.test_na$ind <-  c(`1` = 1, `2` = 1, `3` = 1, `4` = 2, `5` = 1, `6` = 1, `7` = 1, `8` = 1, `9` = 1, `10` = 1, `11` = 1, `12` = 1, `13` = 1, `14` = 1, `15` = 1, `16` = 1, `17` = 1, `18` = 2, `19` = 2, `20` = 2, `21` = 2, `22` = 1, `23` = 3)
+# Loop and extract the appropriate row. For Derry, the ward that has been split into 4 wards (or vice versa), divide the party_aff data by 4 to match the 4 wards in the shapefile
+.test_na$out <- purrr::map2(.test_na[1:length(.test_na$ind)], .test_na$ind, ~{
+  .out <- .x %>%
+    magrittr::extract(.y,)
+  })
+# Bind the hand selected joins and remove extra cols such that it matches .test
+.test_na$out <- do.call(rbind.data.frame, .test_na$out) %>% 
+  select(- support_20.x, - total_20.x, - WP_NAME.y, - dcol) %>% 
+  rename(support_20 = "support_20.y", total_20 = "total_20.y", WP_NAME = "WP_NAME.x")
+# Loop over test$Total to find the NA values and replace them with the hand selected values
+.test$support_20 <- purrr::map2_dbl(.test$support_20, .test$WP_NAME,~{
+  if (is.na(.x)) {
+    .x <- .test_na$out[.test_na$out$WP_NAME == .y, "support_20", drop = T]
+  }
+  .x
+})
+.test$total_20 <- purrr::map2_dbl(.test$total_20, .test$WP_NAME,~{
+  if (is.na(.x)) {
+    .x <- .test_na$out[.test_na$out$WP_NAME == .y, "total_20", drop = T]
+  }
+  .x
+})
+# Overwrite the original object
+shp$nh$wp <- .test
+```
+
+##### 1: MA
+```{r 'Join Shapefile with Voting Totals for MA'}
+shp$ma$wp %<>%
+  mutate_at(vars(TOWN, WARD, PRECINCT), as.character) %>%
+  replace_na(list(WARD = "-"))
+# Custom function to expand abbreviations
+abbv_dir <- function(.x){
+  if (str_detect(.x, "^north\\s|^south\\s|^east\\s|^west\\s")) {
+    .x <- str_replace(.x, "^\\w+", paste0(str_extract(.x, "^\\w"),"."))
+  }
+  .x
+}
+shp$ma$wp <- left_join(shp$ma$wp %>%
+                             mutate_at(vars(TOWN, WARD, PRECINCT), as.character) %>%
+                             replace_na(list(WARD = "-")) %>% 
+                     mutate_at(vars(TOWN, WARD, PRECINCT), tolower) %>% 
+                     rowwise %>% 
+                     mutate_at(vars(TOWN), abbv_dir),
+                           party_aff$ma %>% 
+                             select(City.Town = `City/Town`,
+                                    Ward, Pct,
+                                    Total = `Total Votes Cast`) %>% 
+                     mutate_at(vars(City.Town, Ward, Pct), tolower),
+                           
+                           by =  c(TOWN = "City.Town",
+                                  WARD = "Ward",
+                                  PRECINCT = "Pct"),
+                   )
+# Back to sf object
+shp$ma$wp <- sf::st_sf(shp$ma$wp)
+```
+
+#### 2: Map centroids of Zip codes & Voting Districts together
+In order to make centroids, we first need to ensure all the projections in each of the datasets are using the same coordinate reference system.
+```{r 'Check coordinate reference systems'}
+purrr::map_depth(shp, .depth = 2, ~{
+  sf::st_crs(.x$geometry)
+})
+```
+There are multiple coordinate reference systems currently in use. We can take the CRS used for the zip in each state, and transform the others to match.
+```{r 'Unify coordinate reference systems'}
+.test <- purrr::map(shp, ~{
+  .crs <- sf::st_crs(.x$zip$geometry)
+  purrr::map(.x, ~{
+    sf::st_transform(.x, crs = .crs, check = T)
+  })
+})
+purrr::map_depth(.test, .depth = 2, ~{
+  sf::st_crs(.x$geometry)
+})
+# It looks like it worked.
+shp <- .test
+```
+Just to be sure it worked, let's take a look at the graphs.
+```{r 'Visual check of successful crs transformation'}
+p <- ggplot()
+purrr::walk2(c("blue", "green", "red"), shp$ma, ~{
+  p <<- p + geom_sf(data = .y, color = .x, fill = NA)
+})
+p
+p <- ggplot()
+purrr::walk2(c("blue", "green", "red"), shp$nh, ~{
+  p <<- p + geom_sf(data = .y, color = .x, fill = NA)
+})
+p
+```
+Massachusetts looks fine but the zip codes map of New Hampshire appears to be off. This could be because the zip code from the national database in this Northern part of the state actually spans two states. Let's take a look at zip alone.
+```{r 'Plot NH Zip codes'}
+ggplot() + geom_sf(data = shp$nh$zip) + 
+  geom_sf_text(data = shp$nh$zip, aes(label = zip))
+```
+Despite the overset text everywhere, we can see the zip code spanning the adjacent state is 03579. 
+The `sf` package has an `intersection` function to remove this part of the zip code outside of the state by taking only the intersection of the northern congressional district (#2) and this zip code and replacing the current shape for that zip with this intersection.
+```{r 'Modify 03579'}
+.zip03579 <- sf::st_intersection(shp$nh$zip[shp$nh$zip$zip == "03579", "geometry"], shp$nh$cd[shp$nh$cd$USCongress == 2, "geometry"])
+shp$nh$zip[shp$nh$zip$zip == "03579", "geometry"] <- .zip03579
+```
+Check the handiwork
+```{r 'Replot NH'}
+p <- ggplot()
+purrr::walk2(c("blue", "green", "red"), shp$nh, ~{
+  p <<- p + geom_sf(data = .y, color = .x, fill = NA)
+})
+p
+```
+It looks like the issue is resolved.
+
+Now we can create centroids of all zip codes, congressional districts, and precincts
+```{r 'Create centroids'}
+# Add Centroids
+shp <- purrr::map_depth(shp, .depth = 2, ~{
+  .x$centroid <- sf::st_centroid(.x$geometry)
+  .x
+})
+```
+
+```{r 'Save Shapefiles', eval = F}
+saveRDS(shp, "rds/shapes.rds")
+```
+
+#### 3
+Computing the euclidean distances between zip and W/P centroids is quite a computationally intensive task so it's run as a background task. The code for this task is echoed in the following chunk.
+```{r 'Find Proximal Wards for Zip Codes', eval = F}
+rstudioapi::jobRunScript("centroid_distance.R", name = "Centroid Distance", workingDir = getwd(), exportEnv = .GlobalEnv)
+```
+```{r 'Code for Proximal Wards to zip codes', code = readLines("centroid_distance.R"), eval = F}
+
+```
+
+#### 4, 5, 6
+1. The distances of zip code centroids to precinct centroids are used to select the 20 closest wards. 
+2. The intersection of the ward area with the zip code area is computed.
+3. A proportion of the total precinct is created as follows:
+$$\frac{\text{Precinct Intersection with Zip code}}{\text{Total Precinct Area}}$$
+```{r 'Compute intersections between WPs and Zip Codes'}
+.dists <- readRDS("rds/dists.rds")
+#:  Check intersects on the 20 most proximal wards and return Tue Feb 11 17:04:20 2020 ----
+.test <- purrr::pmap(list(.dist = .dists, .st = names(.dists), .shp = shp), function(.dist, .st, .shp){
+  .dists_20 <- purrr::map(.dist, ~{
+    sort(unlist(.x))[1:20]
+  })
+  # Use intersects to subset 20 most proximal wards
+  .totals <- purrr::map2(.dists_20, .shp$zip$geometry, ~{
+    
+  # Filter Wards/Precincts for the top 20 most proximal wards
+  .geos <- .shp$wp %>% filter(WP_NAME %in% names(.x))
+  # Find which intersect
+  .ints <- sf::st_intersects(.y, sf::st_sfc(.geos$geometry)) %>% extract2(1)
+  # Subset the top 20 by those that intersect
+  .prox_geos <- .geos[.ints, "geometry", drop = T]
+  # Get the intersection area
+  .zip_geo <- .y
+  .ints_shp <- purrr::map(.prox_geos, ~{
+    sf::st_intersection(.zip_geo, .x)
+  })
+  # Find which are virtually contained
+  .percent_contained <- purrr::map2(.prox_geos, .ints_shp, ~{
+    # Compute the percent of the intersection with the zip code based on the total precinct area
+    {sf::st_area(.y) / sf::st_area(.x)} %>%
+      unclass 
+  })
+  # Attribute precinct names to the percent contained
+  names(.percent_contained) <- .geos$WP_NAME[.ints]
+  return(.percent_contained)
+   })
+  return(.totals)
+})
+# Remove all intersections that are < .001 of the total precinct as these are likely artifact
+.props <- purrr::map_depth(.test, 2, ~purrr::keep(.x, ~{.x > .001}))
+```
+
+
+```{r 'Apply Proportions to create aggregate values'}
+# First aggregate Voter Totals from 2016 by zip code for NH and MA 
+# The third object will be a vector with name of each object corresponding to a feature, and the value corresponding to the function the feature will be aggregated with
+.test <- purrr::pmap(list(shp, .props, list(c(Total =  "sum"), c(support_20 = "weighted.mean", total_20 = "sum", Total = "sum"))), ~{
+  .shp <- ..1
+  .p_zips <- ..2
+  .fns <- ..3 # The aggregation functions to apply to the feature
+  purrr::map2_dfr(.shp$zip$zip, .p_zips, ~{
+    # Get the intersecting W/Ps 
+    .wps <- .shp$wp[.shp$wp$WP_NAME %in% names(.y), names(.fns)]
+    .p_zip <- .y
+    # for each aggregation function
+    .out <- purrr::imap_dfc(.fns, ~{
+      # Get the values of the feature to be aggregated
+      .values <- .wps[, .y, drop = T] %>% unclass
+      # Multiply by the proportions of the W/P
+      .values <- .values * unlist(.p_zip)
+      # if a sum is requested
+      if (.x == "sum") {
+        .args <- list(x = .values, na.rm = T)
+        # round the sum to a whole person
+        .out <- round(do.call(.x, .args), 0)
+        # if a weighted.mean is requested
+      } else if (.x == "weighted.mean") {
+        # weights = total W/P votes * the proportion of the total W/P 
+        .w <- .wps[, "total_20", drop = T] * unlist(.p_zip)
+        .args <- list(x = .values, na.rm = T, w = .w)
+        .out <- do.call(.x, .args)
+      }
+    })
+  })
+})
+# outcomes are in order of the zip codes in the zip object for each state, so they can be cbinded
+shp$ma$zip <- cbind.data.frame(shp$ma$zip, .test$ma) %>%
+  select(zip, Total, Number, everything())
+shp$nh$zip <- cbind.data.frame(shp$nh$zip, .test$nh) %>%
+  select(support_20, zip, Total, Number, everything())
+```
+
+Let's make sure the results are consistent and account for missing values.
+```{r 'Check aggregated values and clean'}
+# Sanity check
+summary(unlist(shp$ma$zip[,c("Total")]))
+purrr::map(shp$nh$zip[,c("support_20", "Total")], ~summary(unlist(.x)))
+htmltools::tags$p("There appears to be a single missing value in the support_20 response variable. ")
+shp$nh$zip[shp$nh$zip$support_20 %>% {which(is.na(.))},]
+htmltools::tags$p("It appears to be caused by a divide by 0, so we will set this to 0.")
+shp$nh$zip[shp$nh$zip$support_20 %>% {which(is.na(.))}, "support_20"] <- 0
+```
+
+#### 7
+Voter totals can be computed for each congressional district easily since Wards/Precincts are always geometric subsets of these
+```{r 'WP in CD'}
+# Wards contained in each Congressional District
+.test <- purrr::map(shp, ~{
+  # Reassign the state object
+  .shp <- .x
+  # and the centroids
+  .centroids <- .x$wp$centroid
+  # Determine the W/P centroids contained within each CD geometry
+  .contains <- purrr::map(.x$cd$geometry, ~{
+    .out <- sf::st_intersects(.x, .centroids)[[1]]
+    return(.out)
+  })
+  # sum those contained W/P voter totals
+  .totals <- purrr::map(.contains, ~{
+    sum(.shp$wp[.x, "Total", drop = T], na.rm = T)
+  })
+   
+  .shp$cd$Total <- unlist(.totals)
+  return(.shp)
+})
+htmltools::tags$p("Do the results look appropriate?")
+purrr::map(.test, ~summary(unlist(.x$cd$Total)))
+htmltools::tags$p("Fair voting districts are designed to distribute the vote fairly evenly between them by encompassing close to the same number of voters. The variance in the totals is quite low suggesting that the computed totals for the Congressional Districts are accurate enough.")
+shp <- .test
+```
+
+Those were expensive computations so it's wise to save the shapefiles so as not to have to run them again. 
+```{r 'save shapefiles', eval = F}
+saveRDS(shp, "rds/shapes.rds")
+```
+
+
+
+# Predictive Modeling
+*Note:* All cleaning of census data and predictive modeling chunks are un-evaluated in this document due to the computationally intensive nature of these operations. However, most chunks are echoed for the purpose of following the analytic process.
+
+## Predictive Data Acquisition
+
+### Census Data {#loadcensus}
+Census data zip files are unzipped.
+```{r unzip, eval = F}
+unzip("data/CD_ma.zip", exdir = "data/CD_ma", overwrite = T)
+unzip("data/CD_nh.zip", exdir = "data/CD_nh", overwrite = T)
+```
+
+### Demographic Predictors
+The census data is read in programmatically, descriptive names are applied to variables. Repetitive, filler words in descriptor names are removed, and each table is labelled as a list item.
+```{r 'read census data', eval = F}
+census_data <- purrr::map(c(nh = "data/CD_nh", ma = "data/CD_ma"), ~{
+  .f <- list.files(
+  .x,
+  pattern = ".*ann.csv$", 
+  full.names = T)
+.out <- .f %>%
+  purrr::map(~{
+    .o <- read_csv(.x, col_names = T)
+    .o %<>% {purrr::set_names(., nm = make.names(.[1,]) %>% str_replace_all("\\.{2,}",".") %>% str_replace("Estimate\\.",""))} %>% magrittr::extract(-1, )
+    return(.o)
+  }) %>% 
+  set_names(nm = .f %>% basename() %>% str_extract("[SB]\\d{4,5}"))
+})
+```
+
+The census data is cleaned of the margins of error. These steps are computationally costly so the file is saved with compression to avoid repeating the previous steps.
+```{r 'clean census data', eval = F}
+# Remove margins of error
+census_data <- purrr::map(census_data, ~{
+  .out <- purrr::map(.x, ~{
+  .o <- .x[.x %>% names %>% {!duplicated(.)}]
+  .o %<>% select(- contains("Margin.of.Error")) 
+  return(.o)
+  })
+  return(.out)
+})
+saveRDS(census_data, file = "rds/census_data.rds", compress = "bzip2")
+```
+It is then loaded back in. 
+```{r 'read census rds', eval = F}
+census_data <- readRDS("rds/census_data.rds")
+```
+
+The census data tables are in need of simplification, as there are far too many variables in each table. Here `Percent` columns are removed as populations varies dramatically by zip code is cannot be reliably compared across zip codes. For comparison across all zip codes, the count data will be scaled manually across the entire data set using the methods <a href="#aggregates">described in Derive Zip Aggregates</a>. Additionally, columns that have no predictive value (such as those describing demographics under 18yo) are removed. Each table was inspected manually to determine what transformations were necessary, and then the transformations were mapped out in this nested iteration for legibility and computational efficiency. 
+```{r 'simplify metrics', eval = F}
+census_data <- purrr::map(census_data, ~{
+  
+  purrr::imap(.x, function(.x, .y){# Age by Sex S0101
+    if (.y == "S0101") {
+      .out <- .x %>% 
+      select(- Percent.Total.population) %>% 
+      rename(Total.pop = "Total.Total.population",
+             Percent.Male = `Male.Total.population`,
+             Percent.Female = `Female.Total.population`) %>%
+      mutate_at(vars(-one_of("Id", "Id2","Geography")), as.numeric) %>% 
+      mutate_at(vars(ends_with("ale")), ~{(. / Total.pop) * 100}) %>% 
+      select(Id, Id2, Geography, everything()) %>% 
+      select(- starts_with("Percent")) %>% 
+      discard(~all(is.na(.x))) %>% 
+      select( - contains("SELECTED"), - contains("Under.5"), - contains("5.to.9"), - contains("10.to.14"), - contains("15.to.19"))
+    return(.out)
+    }
+    
+    # households S1101 - This has many variables and will require a spreadsheet to make into proportions
+    if (.y == "S1101") {
+      .out <- .x %>% 
+      mutate_at(vars(- one_of(c("Id",  "Id2", "Geography"))), as.numeric) %>% 
+      discard(~all(is.na(.x)))
+      return(.out)
+    }
+    
+    # EDUCATIONAL ATTAINMENT S1501
+    if (.y == "S1501") {
+      .out <- .x %>% 
+      mutate_at(vars(- one_of(c("Id",  "Id2", "Geography"))), as.numeric) %>% 
+      discard(~all(is.na(.x))) %>% 
+      select(Id, Id2, Geography, everything()) %>% 
+			select( - starts_with("Percent"))
+    return(.out)
+    }
+    
+    # S1602 - Limited English Speaking Households 
+    if (.y == "S1602") {
+      .out <- .x %>% 
+      mutate_at(vars(- one_of(c("Id",  "Id2", "Geography"))), as.numeric) %>% 
+      discard(~all(is.na(.x))) %>% 
+      select(Id, Id2, Geography, everything()) %>% 
+			select( - starts_with("Percent"))
+    return(.out)
+    }    
+    # S1701 - POVERTY STATUS IN THE PAST 12 MONTHS
+    if (.y == "S1701") {
+      .out <- .x %>% 
+      mutate_at(vars(- one_of(c("Id",  "Id2", "Geography"))), as.numeric) %>% 
+      discard(~all(is.na(.x))) %>% 
+      select(Id, Id2, Geography, everything()) %>% 
+			select( - starts_with("Percent"))
+    return(.out)
+    }
+    
+    # Mean Income S1902
+    if (.y == "S1902") {
+      .out <- .x %>% 
+      mutate_at(vars(- one_of(c("Id",  "Id2", "Geography"))), as.numeric) %>% 
+      discard(~all(is.na(.x))) %>% 
+      select(- starts_with("Number")) %>% 
+      select(Id, Id2, Geography, everything())
+    return(.out)
+    }
+    # S1903 - MEDIAN INCOME IN THE PAST 12 MONTHS (IN 2017 INFLATION-ADJUSTED DOLLARS)
+    if (.y == "S1903") {
+      .out <- .x %>% 
+      mutate_at(vars(- one_of(c("Id",  "Id2", "Geography"))), as.numeric) %>% 
+      discard(~all(is.na(.x))) %>% 
+      select(- starts_with("Number")) %>% 
+      select(Id, Id2, Geography, everything())
+    return(.out)
+    }
+    # S2301 - EMPLOYMENT STATUS
+    if (.y == "S2301") {
+      return(.x)
+    }
+    # S2401 - OCCUPATION BY SEX FOR THE CIVILIAN EMPLOYED POPULATION 16 YEARS AND OVER
+    if (.y == "S2401") {
+      .out <- .x %>% 
+      mutate_at(vars(- one_of(c("Id",  "Id2", "Geography"))), as.numeric) %>% 
+      discard(~all(is.na(.x))) %>% 
+      select(Id, Id2, Geography, everything()) %>% 
+			select( - starts_with("Percent"))
+      return(.out)
+    }
+    
+    # S2502 - DEMOGRAPHIC CHARACTERISTICS FOR OCCUPIED HOUSING UNITS
+    if (.y == "S2502") {
+      .out <- .x %>% 
+      mutate_at(vars(- one_of(c("Id",  "Id2", "Geography"))), as.numeric) %>% 
+      discard(~all(is.na(.x))) %>% 
+      select(Id, Id2, Geography, everything()) %>% 
+			select( - starts_with("Percent"))
+    return(.out)
+    }
+    
+    #S2801 - TYPES OF COMPUTERS AND INTERNET SUBSCRIPTIONS
+    if (.y == "S2801") {
+      .out <- .x %>% 
+      mutate_at(vars(- one_of(c("Id",  "Id2", "Geography"))), as.numeric) %>% 
+      discard(~all(is.na(.x))) %>% 
+      select(Id, Id2, Geography, everything()) %>% 
+			select( - starts_with("Percent"))
+    return(.out)
+    }
+    
+    # median age by sex B01002
+    # No change
+    if (.y == "B01002") {
+      return(.x)
+    }
+    # race B02001
+    if (.y == "B02001") {
+      .out <- .x %>% 
+        mutate_at(vars(starts_with("Est")), as.numeric) %>% 
+        # total pop to total
+        rename(Total.pop = `Total.`) %>% 
+        # Create proportions
+        mutate_at(vars(starts_with("Est")), ~{. / Total.pop * 100}) %>% 
+        # remove last 2 columns
+        magrittr::extract(,- c(12:13)) %>% 
+        # Remove Total.pop such that there is no conflict when joined for zip_compare
+        select(- Total.pop)
+      return(.out)
+    }
+  })
+})
+```
+
+Data for all census tables are flattened into a single data frame after removing duplicate and extraneous geographic variables.
+```{r 'Flatten the tables into a single list', eval = F}
+zip_compare <- purrr::map(census_data, ~{
+  .out <- plyr::join_all(.x, by = .x[[1]] %>% names %>% .[1:3]) %>% 
+  {subset(., subset = !duplicated(names(.)))} %>%
+  rename(zip = "Id2") %>% 
+  select(-Id, - Geography) %>% 
+  mutate_at(vars(- one_of(c("zip"))), as.numeric) %>%
+  filter(!is.na(zip)) %>% 
+  select_if(~sum(!is.na(.)) > 0)
+}) 
+zip_compare <- bind_rows(zip_compare, .id = "st")
+saveRDS(zip_compare, "rds/zip_compare.rds")
+```
+
+#### Weights
+The census data descriptors were numerous, so the descriptors were put to Googlesheets such that campaign volunteers could weight the variables as a means of important feature selection. This reduces noise in the data set.
+```{r 'crowdsourced weighting and feature selection', eval = F, echo = F}
+ss <- googlesheets4::sheets_get("1x9x8U1wTBOIvFU8McLPv-Yz77gbVXJcIlRmxnfM_Bm4")
+names(zip)
+data.frame(features = names(zip_compare)) %>% write_csv("features.csv")
+```
+After weighting, the data is read back in and the individual weights attributed by each volunteer are averaged to create overall predictor weights.
+<em style="font-size:.8em">Note: the chunk is not echoed such that the sheet is not linked in the document.</em>
+```{r 'pull weights', eval = T, echo = F}
+.weights <- googlesheets4::sheets_read("1x9x8U1wTBOIvFU8McLPv-Yz77gbVXJcIlRmxnfM_Bm4", range = "A:F")
+.weights %<>% 
+  replace_na(list(0, Grey = 0, `...3` = 0, `...4` = 0, `...5` = 0, yenni = 0)) %>% 
+  rowwise %>% 
+  mutate(M = mean(c(Grey, ...3, ...4, ...5, yenni)))
+names(.weights)[1] <- "Feature"
+.weights[1, "Feature"] <- "Number"
+```
+
+There is a lot of missing data in the census data sets. The `mice` package provides an imputation algorithm that uses random forests to fill missing values. This is an extremely expensive operation (2+ days for all features) so it is best run as a background process.
+<em style="font-size:.8em">Note: impute_zip calls the full census data in the zip_compare object. If reproducing this script, this file will need to be updated to use the zip_compare_weighted object and associated rds file. Imputation on this object will dramatically reduce the run-time as there a third of the features in the weighted data set than in the full.</em>
+```{r 'Impute missing data', eval = F}
+rstudioapi::jobRunScript(path = "impute_zip.R", name = "Impute Zip", workingDir = here::here(), exportEnv = "R_GlobalEnv")
+```
+```{r 'Impute missing data code', code = readLines("impute_zip.R"), eval = F}
+
+```
+
+```{r 'load zip compare'}
+zip_compare <- readRDS("rds/zip_compare.rds")
+```
+
+Unweighted features and 0 weight features are dropped from the dataset.
+```{r 'remove 0 weight', eval = T}
+# Which features are in the weighting sheet but not in the data
+.not <- .weights %>%
+  filter(M == 0) %>% 
+  extract2(1) %>% 
+  magrittr::is_in(names(zip_compare)) %>%
+  which
+
+zip_compare_weighted <- zip_compare[, - .not]
+```
+
+
+In this iteration, we have used the domain expertise of the volunteers to select the most predictive feature. In addition to this method of feature selection, we can also use `caret::findCorrelation` on a correlation matrix of the numeric predictors to determine which variables are highly correlated and remove them as any highly correlated variables add no additional information as predictors.
+The first two variables are non-numeric, and must not be supplied to `cor`.
+
+```{r 'Remove highly correlated', eval = T}
+purrr::map_chr(zip_compare_weighted, class) %>%
+  unlist %>% 
+  {subset(., subset = . != "numeric")} %>% 
+  {set_names(which(names(.) %in% names(zip_compare_weighted)), names(.))}
+htmltools::tags$p("We see the two location features are non-numeric and will error if passed to the ",htmltools::tags$code("cor"), " function.")
+library(caret)
+htmltools::tags$p(htmltools::tags$code("dplyr::select_if"), " is used to pass only the numeric variables.")
+(.cor <- caret::findCorrelation(
+  cor(
+    zip_compare_weighted %>%
+      select_if(is.numeric)
+    )
+  )
+)
+htmltools::HTML("<code>findCorrelation</code> yields indexes of the features which are highly correlated with other features in the dataset. Noting that there are two <code>character</code> variables preceding the numeric variables passed to <code>cor</code>, 2 must be added to all of the indexes such that they correspond to the appropriate variables in the dataset.")
+htmltools::tags$p("The number of features before removing correlated features: ", (.pcol <- ncol(zip_compare_weighted)))
+zip_compare_weighted <- zip_compare_weighted[, - c(.cor + 2)]
+htmltools::tags$p("The number of features after removing correlated features: ", ncol(zip_compare_weighted),". About ", glue::glue("{round((1 - ncol(zip_compare_weighted)/.pcol)  * 100,2)}% of the data in extraneous features were removed. This will reduce the model training time significantly."))
+```
+
+Now training and test sets are partitioned by the states of NH and MA respectively. 
+```{r 'join train', eval = F}
+mod <- list()
+mod$train <- zip_compare_weighted %>% filter(st == "nh") %>% 
+  select(- st)
+mod$test <- zip_compare_weighted %>% filter(st == "ma") %>% 
+  select(- st)
+```
+The general predictors computed in this section now need to be joined to the aggregates of the specific predictors created earlier.
+```{r 'Join general and specific predictors', eval = F}
+mod <- purrr::pmap(list(mod[c("test", "train")], shp, names(shp)), ~{
+  .zip <- intersect(..2$zip$zip, ..1$zip)
+  .shp <- ..2$zip[..2$zip$zip %in% .zip,]
+  # Account for the rv in nh shape file
+  if (..3 == "ma") {
+    .shp %<>% 
+      # Remove large features
+      select(zip, Total, Number)  
+  } else {
+    .shp %<>% 
+      select(support_20, zip, Total, Number)
+  }
+  
+  left_join(.shp,
+            ..1[..1$zip %in% .zip, ],
+            by = "zip")
+})
+```
+These are ready to be trained on.
+
+## Modeling
+Predictive models are trained in a background task because of their computationally intensive nature. The model building code is echoed in the following chunk.
+```{r 'save data and train', eval = F}
+saveRDS(mod, "rds/mod.rds")
+rstudioapi::jobRunScript(path = "manual_mod.R", name = "Model Build", workingDir = here::here(), exportEnv = "R_GlobalEnv")
+```
+```{r 'Echo manual_mod', eval = F, code = readLines("manual_mod.R")}
+
+```
+
+
+
+Create a prediction from the mean of the ensemble model predictions to show the percentage of democrats likely to support our chosen candidate in a given zip code.
+```{r 'ensembled prediction', eval = T}
+predictions <- readRDS("rds/predictions.rds")
+mod <- readRDS("rds/mod.rds")
+mod$test$support_20 <- (do.call(cbind, predictions)) %>%
+  rowMeans() %>%
+  as.vector %>% 
+  # Turn negative values to 0
+  purrr::modify_if(.p = {sign(.) == -1}, .f = ~return(0))
+mod$test$zip <- mod$test_zip
+mod$test %>% 
+  dplyr::select(zip, Total, Number, support_20) %>% 
+  arrange(desc(support_20)) %>% 
+  DT::datatable()
+```
+
+
+# Maps
+The geometries need to be rejoined with the results of the modeling.
+```{r 'Join model predictions and shapefiles'}
+shp <- readRDS("rds/shapes.rds")
+shp$ma$zip <- left_join(
+  shp$ma$zip,
+  mod$test,
+  by = c("zip", "Total", "Number")
+) %>% sf::st_as_sf()
+```
+
+
+```{r 'plot shapefile', cache = F}
+library(sf)
+.cols <- c(
+    dem_blue = "#0015bc",
+    wp = "#e3902b",
+    zip = "#6a6e7f",
+    cd = "#e65027"
+  )
+htmltools::HTML(glue::glue('Color coding is as follows: <ul>{htmltools::tagList(purrr::imap(.cols[-1],~ {
+if (.y == "wp") .y <- "Wards/Precincts" else if (.y == "zip") .y <- "Zip Codes" else .y <- "Congressional Districts"
+htmltools::tags$li(style = glue::glue("color:{.x}"), htmltools::tags$strong(.y))}))}</ul>'))
+make_breaks <- function(breaks){
+  #remove na
+  breaks <- breaks[!is.na(breaks)]
+  
+  if (sum(breaks - floor(breaks)) > 0) .r <- 3 else .r <- 0
+  .out <- quantile(breaks, na.rm = T) %>% 
+  {
+    set_names(., paste(names(.), round(., .r), sep = ': '))
+  }
+  .out
+}
+(
+  ma_map <- ggplot() +
+    geom_sf(
+      data = shp$ma$zip,
+      color = alpha(.cols["zip"], alpha = 0.4),
+      aes(fill = support_20, text = zip, label = Number)
+    ) +
+    scale_fill_gradient(
+      low = colorspace::darken(.cols["dem_blue"], amount = .6),
+      high = colorspace::lighten(.cols["dem_blue"], amount = .6),
+      breaks = make_breaks(shp$ma$zip$support_20)
+    ) +
+    geom_sf(
+      data = shp$ma$wp,
+      color = alpha(.cols["wp"], alpha = 0.5),
+      fill = alpha("lightblue", alpha = 0.0),
+      size = .4
+    ) +
+    geom_sf(
+      data = shp$ma$cd,
+      color = alpha(.cols["cd"], alpha = 0.5),
+      fill = alpha("lightblue", alpha = 0.0)
+    ) +
+    labs(title = "Estimated Support for Yang by Zip",
+         x = "", y = "") +
+    theme(
+      plot.title = element_text(hjust = .5),
+      plot.subtitle = element_text(hjust = .5),
+      legend.position = "bottom"
+    ) +
+    guides(fill = guide_legend(title = "P(Support)"))
+)
+htmltools::tags$p("Filled by probability of support among Democrats")
+htmltools::tags$p("Probability derived from similar census demographics to New Hampshire")
+htmltools::tags$p("Interactive Plotly version below:")
+plotly::ggplotly(ma_map, tooltip = c(P = "fill", zip = "text", label = "label")) %>%
+  plotly::layout(autosize = F,
+                 margin = list(
+                   l = 50,
+                   r = 50,
+                   b = 50,
+                   t = 50,
+                   pad = 5
+                 ))
+```
+
+
+```{r 'plot yg', cache = F}
+
+(
+  ma_yg_map <- ggplot() +
+    geom_sf(
+      data = shp$ma$zip,
+      color = alpha(.cols["zip"], alpha = 0.2),
+      aes(fill = Number, text = zip, label = Number)
+    ) +
+    geom_sf_text(data = shp$ma$zip, aes(label = Number), size = .4) +
+    scale_fill_gradient(
+      low = colorspace::darken(.cols["dem_blue"], amount = .6),
+      high = colorspace::lighten(.cols["dem_blue"], amount = .6),
+      breaks = make_breaks(shp$ma$zip$Number)
+    ) +
+    geom_sf(
+      data = shp$ma$cd,
+      color = alpha(.cols["cd"], alpha = 0.5),
+      fill = alpha("lightblue", alpha = 0.0)
+    ) +
+    labs(title = "Support by Zip",
+         x = "", y = "") +
+    theme(
+      plot.title = element_text(hjust = .5),
+      plot.subtitle = element_text(hjust = .5),
+      legend.position = "bottom"
+    ) +
+    guides(fill = guide_legend(title = "# Supporters"))
+)
+
+htmltools::HTML(glue::glue("<p>Supporter Numbers across MA</p><p><em>Legend:</em> { paste(names(quantile(mod$test$Number)), quantile(mod$test$Number), sep = ': ') %>% paste(collapse = ', ') }</p>"))
+htmltools::tags$p("Interactive Plotly version below:")
+plotly::ggplotly(ma_yg_map, tooltip = c("fill", zip = "text", label = "label")) %>%
+  plotly::layout(autosize = F, margin = list(l = 50, r = 50, b = 50, t = 50, pad = 5))
+```
+```{r 'Plots Voting Regions', eval = F, echo = F}
+ma_cd_map <- ggplot() +
+  geom_sf(data = shp$ma$wp, color = alpha("#da3248", alpha = 0.5), fill = alpha("lightblue", alpha = 0.0), size = .4) +
+  geom_sf(data = shp$ma$cd, color = alpha("#f6ac5b", alpha = 0.5), fill = alpha("lightblue", alpha = 0.0)) 
+```
+
+Unfortunately, Yang dropped out of the primary after the New Hampshire primary, so it will be difficult to verify the accuracy of these predictions. As a proxy, we might look at the correlation between the current supporters and the predictions.
+```{r 'MA YG P Cor'}
+shp$ma$zip %>%
+  as.data.frame() %>%
+  select(Number, support_20) %>%
+  replace_na(list(support_20 = 0, Number = 0)) %>%
+  {
+    cor(.[1], y = .[2], use = "everything")
+  }
+```
+
+This correlation is quite small. This could indicate that our predictions are inaccurate or that the number of supporters in a given area is not representative of the actual votes. To better understand our result, we can take a look at the correlation between these values for New Hampshire.
+
+```{r 'NH YG P Cor'}
+shp$nh$zip %>%
+  as.data.frame() %>%
+  select(Number, support_20) %>%
+  replace_na(list(support_20 = 0, Number = 0)) %>%
+  {
+    cor(.[1], y = .[2], use = "everything")
+  }
+```
+
+It looks like the correlation is even lower for New Hampshire. We have reason to believe that existing supporters in an area is not representative of the vote, and is likely based on other factors.
+
+I hope this analysis was interesting and educational! 
+If you have comments, questions, feedback or otherwise just want to get in touch, please feel free to [contact me.](http:://themindful.life/contact)
+If the work herein is comparable to a task that might be useful to you, your campaign, or organization, I am currently open to work offers! Please feel free to [reach out to me](http:://themindful.life/contact)
+
+
+

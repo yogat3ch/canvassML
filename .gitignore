@@ -1,0 +1,13 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+.httr-oauth
+data/
+rds/
+*_cache/
+/cache/
+*_files/
+/files/
+*.utf8.md
+*.knit.md
