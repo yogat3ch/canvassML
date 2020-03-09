@@ -56,7 +56,9 @@
   # replace multiple spaces
   str_replace("\\s{2,}", "\\s") %>% 
   # Use full words instead of abbreviations
-  str_replace("Gt\\.?", "Grant") %>% 
-  str_replace("Pur\\.", "Purchase") %>% 
-  str_replace("Loc\\.", "Location")
-  
+  str_replace("Gt\\.?$", "Grant") %>% 
+  str_replace("Pur\\.?$", "Purchase") %>% 
+  str_replace("Loc\\.?$", "Location") %>% 
+  str_replace("\\*$", "") 
+  # Fix Fitzwilliam Typo
+.per_support$WP_NAME[39] <- "Fitzwilliam"

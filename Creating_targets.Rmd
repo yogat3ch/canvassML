@@ -1,13 +1,12 @@
 ---
 title: "CanvassML: An application of machine learning to predict campaign support"
 author: "Stephen Holsenbeck"
-date: '`r format(Sys.time(), "%Y-%m-%d")`'
+date: '2020-02-29'
 output: 
   html_document:
     self_contained: yes
     theme: cerulean
     code_folding: hide
-    toc_float: TRUE
     df_print: paged
     toc: TRUE
 ---
@@ -25,7 +24,6 @@ set.seed(1)
 library(tidyverse)
 library(dtplyr)
 library(magrittr)
-here::here(path = "~/Volunteering/Andrew Yang Campaign/yang_success_mod/")
 ```
 # Intro
 All code for this project is hosted at [github.com/yogat3ch/canvassML](http://github.com/yogat3ch/canvassML)
@@ -35,20 +33,21 @@ This algorithm builds from previous work with spatial data and canvassing from 2
 <br>
 
 #### On delegate allocation
-Massachusetts and New Hampshire use a threshold-based delegate allocation system. Fifteen percent of the vote of a congressional district (CD) must be acquired to win a portion of that CDs delegates, split proportionally between other threshold crossing candidates percentages. State delegates are similar, but the threshold is applied at the state level, ie fifteen percent of the state votes must be acquired to receive a proportional amount of the state delegates.
+Massachusetts and New Hampshire use a threshold-based delegate allocation system. Fifteen percent of the vote of a congressional district (CD) must be acquired to win a portion of that CDs delegates, split proportionally between other threshold crossing candidates percentages. State delegates are similar, but the threshold is applied at the state level, ie fifteen percent of the state votes must be acquired to receive a proportional amount of the state delegates. Thus it is imperative to focus on regions within congressional districts where support is likely to be densest. CanvassML is created to facilitate the targeting of canvassing campaigns. In this analysis we look at New Hampshire and Massachusetts, though the method could be extrapolated to any adjacent states.
 <br>
 
 ### Model description
 The model uses two types of predictive variables: <strong>specific and demographic.</strong><br>
-The <strong>specific predictors</strong> are comprised of aggregate numbers of supporters who have already affiliated themselves as supporters of the campaign. These are typically registered volunteers or others who've expressed their commitment to vote. These numbers are counted towards the vote thresholds needed for a given congressional district/state. A campaign might also use mailing list subscribers aggregated by zip code. 
+The <strong>specific predictors</strong> are comprised of aggregate numbers of supporters who have already affiliated themselves as supporters of the campaign. These are typically registered volunteers or others who've expressed their commitment to vote. A campaign might also use mailing list subscribers aggregated by zip code. 
 
 The <strong>demographic predictors</strong> are comprised of census data. These data sources are used to characterize the demographic make-up of zip codes, and act as predictors for canvassing success per zip code.
 Together, these data can be used as predictors in a predictive algorithm to be trained on areas where a reliable outcome variable is available, and tested on areas yet to be targeted for canvassing.
 
 In this example, Massachusetts zip codes will be used as the target and data from New Hampshire zip codes will be used as the training set. Adjacent states within the same ["political region"](https://www.businessinsider.com/the-11-nations-of-the-united-states-2015-7) are likely to yield more accurate cross-state comparisons than those with large geographic separations.
 
-### Outcome
-New Hampshire 2020 primary election data are originally used as the response variable in the training data. This is possible because the primary has not yet taken place in an adjacent state, MA in this case. If voter data is not available, aggregate success rates from existing canvass efforts for an area might also serve as an outcome variable if a vote has not taken place. Polling results, if available aggregated by the required geographies, could also serve as the outcome variable. 
+### Outcome {#outcome}
+New Hampshire 2020 primary election data are used as the response variable in the training data. This is possible because the primary has not yet taken place in Massachusetts, an adjacent state. If voter data is not available, aggregate success rates from existing canvass efforts for an area might also serve as an outcome variable in lieu of voting results. Polling results, if available aggregated by the required geographies, could also serve as the outcome variable. 
+
 
 The table below was copied from [WMUR](https://elections.ap.org/wmur/results/2020-02-11/state/NH/race/P/raceid/32115) using Chrome's Developer tools to an HTML file, and can be parsed using `rvest`, `xml2`, and the `tidyverse` (specifically `dplyr`, `stringr` and `readr`). 
 
@@ -461,6 +460,7 @@ $$\frac{\text{Precinct Intersection with Zip code}}{\text{Total Precinct Area}}$
 })
 # Remove all intersections that are < .001 of the total precinct as these are likely artifact
 .props <- purrr::map_depth(.test, 2, ~purrr::keep(.x, ~{.x > .001}))
+saveRDS(.props, "rds/wp_to_zip_props.rds")
 ```
 
 
@@ -949,7 +949,8 @@ plotly::ggplotly(ma_map, tooltip = c(P = "fill", zip = "text", label = "label"))
                    b = 50,
                    t = 50,
                    pad = 5
-                 ))
+                 )) %>% 
+  plotly::partial_bundle()
 ```
 
 
@@ -986,7 +987,8 @@ plotly::ggplotly(ma_map, tooltip = c(P = "fill", zip = "text", label = "label"))
 htmltools::HTML(glue::glue("<p>Supporter Numbers across MA</p><p><em>Legend:</em> { paste(names(quantile(mod$test$Number)), quantile(mod$test$Number), sep = ': ') %>% paste(collapse = ', ') }</p>"))
 htmltools::tags$p("Interactive Plotly version below:")
 plotly::ggplotly(ma_yg_map, tooltip = c("fill", zip = "text", label = "label")) %>%
-  plotly::layout(autosize = F, margin = list(l = 50, r = 50, b = 50, t = 50, pad = 5))
+  plotly::layout(autosize = F, margin = list(l = 50, r = 50, b = 50, t = 50, pad = 5)) %>% 
+  plotly::partial_bundle()
 ```
 ```{r 'Plots Voting Regions', eval = F, echo = F}
 ma_cd_map <- ggplot() +
@@ -1019,9 +1021,139 @@ shp$nh$zip %>%
 
 It looks like the correlation is even lower for New Hampshire. We have reason to believe that existing supporters in an area is not representative of the vote, and is likely based on other factors.
 
+# Validation
+Since Mr. Yang dropped out of the race before the Massachusetts primary, there is unfortunately no way to validate the predictions of the current model. The question remains as to whether this method of predicting support could provide a significant bump to the success of canvassing campaigns. Fortunately, with some revisions to the input variables, we can run the model for Bernie Sanders who is still in the 2020 race and for whom primary voting results are available in Massachusetts.
+
+## Replace Response Variable and Supporter Numbers
+The response variable in the training model will be the number of Sanders voters in the 2020 NH primary
+```{r 'Load Response Variable'}
+rv <- list(ma = NA, nh = NA)
+.candidate <- 'Sanders'
+source("nh_primary_20.R")
+rv$nh <- .per_support
+```
+```{r 'Load support in 16 for Sanders'}
+.per_support <- read_csv("data/nh_primary_16_sanders.csv")
+```
+```{r 'Join support in 16 and support in 20 RV'}
+.per_support <- left_join(.per_support,
+                          rv$nh %>% 
+                            select(- total_20))
+```
+
+The number of Yang supporters in the training set can be replaced with the number of Bernie voters from the 2016 election. However, the numbers by Wards/Precincts will need to be extrapolated onto zip codes via the method used previously.
+
+```{r 'Load the Shapefiles'}
+shp <- readRDS("rds/shapes.rds")
+```
+
+#### Join Supporter Numbers to WP
+```{r 'Join Sanders Supports to NH WP object'}
+shp$nh$wp$WP_NAME %<>% 
+  str_replace("\\s{2,}", "\\s") %>% 
+  # Use full words instead of abbreviations
+  str_replace("Gt\\.?$", "Grant") %>% 
+  str_replace("Pur\\.?$", "Purchase") %>% 
+  str_replace("Loc\\.?$", "Location") %>% 
+  str_replace("\\*$", "") 
+.test <- left_join(shp$nh$wp %>% 
+            mutate_at(vars(WARD), ~str_replace(., "\\s\\-","")) %>% 
+            mutate_at(vars(WARD), ~str_replace(., "\\sEntire","")) %>% 
+            select(- support_20, - total_20),
+          .per_support,
+          by = "WP_NAME")
+.test_na <- fuzzyjoin::stringdist_join(
+  .test %>% filter(is.na(support_20) | is.na(total_16)),
+  .per_support,
+  by = "WP_NAME",
+  mode = "left",
+  method = "jw",
+  distance_col = "dcol"
+) %>% arrange(dcol)
+# Split each of the missing matches up, and view them 1 by 1 to select the right match by hand
+.test_na <- unique(.test_na$WARD) %>% purrr::map(~{filter(.test_na, WARD == .x) %>% head()})
+View(.test_na[[18]])
+# Extract the entry that most closely corresponds (hand selected)
+.test_na$ind <-  c(`1` = 1, `2` = 2, `3` = 1, `4` = 1, `5` = 2, `6` = 1, `7` = 1, `8` = 1, `9` = 1, `10` = 1, `11` = 1, `12` = 1, `13` = 2, `14` = 2, `15` = 2, `16` = 2, `17` = 1, `18` = 3)
+# Loop and extract the appropriate row. For Derry, the ward that has been split into 4 wards (or vice versa), divide the party_aff data by 4 to match the 4 wards in the shapefile
+.test_na$out <- purrr::map2(.test_na[1:length(.test_na$ind)], .test_na$ind, ~{
+  .out <- .x %>%
+    magrittr::extract(.y,)
+  })
+# Bind the hand selected joins and remove extra cols such that it matches .test
+.test_na$out <- do.call(rbind.data.frame, .test_na$out) %>% 
+  select( - matches(".x$")) %>% 
+  select(- vars matches("dcol")) %>% 
+  rename(Total = "Total.y")
+# Loop over test$Total to find the NA values and replace them with the hand selected values
+.test$Total <- purrr::map2_dbl(.test$Total, .test$WARD,~{
+  if (is.na(.x)) {
+    .x <- .test_na$out[.test_na$out$WARD == .y, "Total", drop = T]
+  }
+  .x
+})
+# Overwrite the original object
+shp$nh$wp <- .test
+```
+
+```{r 'Load Proportions'}
+.props <- readRDS("rds/wp_to_zip_props.rds")
+```
+```{r 'Apply Proportions to create aggregate values'}
+# First aggregate Voter Totals from 2016 by zip code for NH and MA 
+# The third object will be a vector with name of each object corresponding to a feature, and the value corresponding to the function the feature will be aggregated with
+.test <- purrr::pmap(list(shp, .props, list(c(Number =  "sum"), c(support_20 = "weighted.mean", total_20 = "sum", Total = "sum"))), ~{
+  .shp <- ..1
+  .p_zips <- ..2
+  .fns <- ..3 # The aggregation functions to apply to the feature
+  purrr::map2_dfr(.shp$zip$zip, .p_zips, ~{
+    # Get the intersecting W/Ps 
+    .wps <- .shp$wp[.shp$wp$WP_NAME %in% names(.y), names(.fns)]
+    .p_zip <- .y
+    # for each aggregation function
+    .out <- purrr::imap_dfc(.fns, ~{
+      # Get the values of the feature to be aggregated
+      .values <- .wps[, .y, drop = T] %>% unclass
+      # Multiply by the proportions of the W/P
+      .values <- .values * unlist(.p_zip)
+      # if a sum is requested
+      if (.x == "sum") {
+        .args <- list(x = .values, na.rm = T)
+        # round the sum to a whole person
+        .out <- round(do.call(.x, .args), 0)
+        # if a weighted.mean is requested
+      } else if (.x == "weighted.mean") {
+        # weights = total W/P votes * the proportion of the total W/P 
+        .w <- .wps[, "total_20", drop = T] * unlist(.p_zip)
+        .args <- list(x = .values, na.rm = T, w = .w)
+        .out <- do.call(.x, .args)
+      }
+    })
+  })
+})
+# outcomes are in order of the zip codes in the zip object for each state, so they can be cbinded
+shp$ma$zip <- cbind.data.frame(shp$ma$zip, .test$ma) %>%
+  select(zip, Total, Number, everything())
+shp$nh$zip <- cbind.data.frame(shp$nh$zip, .test$nh) %>%
+  select(support_20, zip, Total, Number, everything())
+```
+
+Let's make sure the results are consistent and account for missing values.
+```{r 'Check aggregated values and clean'}
+# Sanity check
+summary(unlist(shp$ma$zip[,c("Total")]))
+purrr::map(shp$nh$zip[,c("support_20", "Total")], ~summary(unlist(.x)))
+htmltools::tags$p("There appears to be a single missing value in the support_20 response variable. ")
+shp$nh$zip[shp$nh$zip$support_20 %>% {which(is.na(.))},]
+htmltools::tags$p("It appears to be caused by a divide by 0, so we will set this to 0.")
+shp$nh$zip[shp$nh$zip$support_20 %>% {which(is.na(.))}, "support_20"] <- 0
+```
+
+
+
 I hope this analysis was interesting and educational! 
 If you have comments, questions, feedback or otherwise just want to get in touch, please feel free to [contact me.](http:://themindful.life/contact)
-If the work herein is comparable to a task that might be useful to you, your campaign, or organization, I am currently open to work offers! Please feel free to [reach out to me](http:://themindful.life/contact)
+If the work herein is comparable to a task that might be useful to you, your campaign, or organization, I am currently open to work offers! Please feel free to [reach out to me](http:://themindful.life/contact).
 
 
 
