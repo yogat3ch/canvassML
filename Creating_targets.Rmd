@@ -1026,17 +1026,16 @@ Since Mr. Yang dropped out of the race before the Massachusetts primary, there i
 
 ## Replace Response Variable and Supporter Numbers
 The response variable in the training model will be the number of Sanders voters in the 2020 NH primary
-```{r 'Load Response Variable'}
+```{r 'Load Variables'}
 rv <- list(ma = NA, nh = NA)
 .candidate <- 'Sanders'
 source("nh_primary_20.R")
 rv$nh <- .per_support
-```
-```{r 'Load support in 16 for Sanders'}
 .per_support <- read_csv("data/nh_primary_16_sanders.csv")
 ```
 ```{r 'Join support in 16 and support in 20 RV'}
-.per_support <- left_join(.per_support,
+party_aff <- list()
+party_aff$nh <- left_join(.per_support,
                           rv$nh %>% 
                             select(- total_20))
 ```
@@ -1047,7 +1046,7 @@ The number of Yang supporters in the training set can be replaced with the numbe
 shp <- readRDS("rds/shapes.rds")
 ```
 
-#### Join Supporter Numbers to WP
+#### NH: Join Supporter Numbers to WP
 ```{r 'Join Sanders Supports to NH WP object'}
 shp$nh$wp$WP_NAME %<>% 
   str_replace("\\s{2,}", "\\s") %>% 
@@ -1060,11 +1059,11 @@ shp$nh$wp$WP_NAME %<>%
             mutate_at(vars(WARD), ~str_replace(., "\\s\\-","")) %>% 
             mutate_at(vars(WARD), ~str_replace(., "\\sEntire","")) %>% 
             select(- support_20, - total_20),
-          .per_support,
+          party_aff$nh,
           by = "WP_NAME")
 .test_na <- fuzzyjoin::stringdist_join(
   .test %>% filter(is.na(support_20) | is.na(total_16)),
-  .per_support,
+  party_aff$nh,
   by = "WP_NAME",
   mode = "left",
   method = "jw",
@@ -1072,28 +1071,115 @@ shp$nh$wp$WP_NAME %<>%
 ) %>% arrange(dcol)
 # Split each of the missing matches up, and view them 1 by 1 to select the right match by hand
 .test_na <- unique(.test_na$WARD) %>% purrr::map(~{filter(.test_na, WARD == .x) %>% head()})
-View(.test_na[[18]])
+
 # Extract the entry that most closely corresponds (hand selected)
-.test_na$ind <-  c(`1` = 1, `2` = 2, `3` = 1, `4` = 1, `5` = 2, `6` = 1, `7` = 1, `8` = 1, `9` = 1, `10` = 1, `11` = 1, `12` = 1, `13` = 2, `14` = 2, `15` = 2, `16` = 2, `17` = 1, `18` = 3)
-# Loop and extract the appropriate row. For Derry, the ward that has been split into 4 wards (or vice versa), divide the party_aff data by 4 to match the 4 wards in the shapefile
-.test_na$out <- purrr::map2(.test_na[1:length(.test_na$ind)], .test_na$ind, ~{
+.ind <-  c(`1` = 1, `2` = 2, `3` = 1, `4` = 1, `5` = 2, `6` = 1, `7` = 1, `8` = 1, `9` = 1, `10` = 1, `11` = 1, `12` = 1, `13` = 2, `14` = 2, `15` = 2, `16` = 2, `17` = 1, `18` = 3)
+
+.out <- purrr::map2(.test_na, .ind, ~{
   .out <- .x %>%
     magrittr::extract(.y,)
   })
 # Bind the hand selected joins and remove extra cols such that it matches .test
-.test_na$out <- do.call(rbind.data.frame, .test_na$out) %>% 
+.out <- do.call(rbind.data.frame, .out) %>% 
   select( - matches(".x$")) %>% 
-  select(- vars matches("dcol")) %>% 
-  rename(Total = "Total.y")
-# Loop over test$Total to find the NA values and replace them with the hand selected values
-.test$Total <- purrr::map2_dbl(.test$Total, .test$WARD,~{
-  if (is.na(.x)) {
-    .x <- .test_na$out[.test_na$out$WARD == .y, "Total", drop = T]
-  }
-  .x
-})
+  select(- matches("dcol$")) %>% 
+  rename_at(vars(matches(".y$")), ~{str_replace(., ".y$", "")})
+# Loop and extract the appropriate row. For Derry, the ward that has been split into 4 wards (or vice versa), divide the party_aff data by 4 to match the 4 wards in the shapefile
+Derry <- function(.name, .total){
+    if (str_detect(.name, "Derry")) round(.total / 4, 0)
+    else
+      .total
+    }
+.out %<>% rowwise %>% 
+  mutate(total_16.x = Derry(WP_NAME, total_16)) %>% 
+  select(- total_16) %>% 
+  rename(total_16 = total_16.x,
+         geometry = geomet)
+# Replace values with the hand selected values
+.test[match(.test$WARD, .out$WARD) %>% {
+  !is.na(.)
+}, ] <- .out[match(.test$WARD, .out$WARD)[match(.test$WARD, .out$WARD) %>% {
+  !is.na(.)
+}], names(.test)]
 # Overwrite the original object
 shp$nh$wp <- .test
+```
+
+#### MA: Join Supporter Numbers to WP
+```{r 'Clean Party Affiliation file'}
+party_aff$ma <- read_csv("data/ma_primary_16.csv")
+party_aff$ma %<>% 
+  # Remove the AE, AW from Chicopee ward names
+  mutate_at(vars(Pct), ~{str_extract(., "^\\w")}) %>%
+  # re-summarize
+  group_by(`City/Town`, Ward, Pct) %>% 
+  summarize_all(sum) 
+# Acton Precinct 5 is missing. We'll replace it with the mean
+party_aff$ma <- party_aff$ma %>%
+  filter(str_detect(`City/Town`, "Acton")) %>% 
+  select( - Ward, - Pct) %>% 
+  group_by(`City/Town`) %>% 
+  summarise_all(~round(mean(.),0)) %>% 
+  magrittr::inset("Ward", value = "-") %>% 
+  magrittr::inset("Pct", value = "5") %>% 
+  rbind.data.frame(party_aff$ma) %>% 
+  ungroup
+# Manchester-by-the-sea is referred to as Manchester in the shapefile
+party_aff$ma[str_detect(party_aff$ma$`City/Town`, "Manchester"), "City/Town"] <- "manchester"
+```
+
+```{r 'Transform MA Shapefiles for Join'}
+# Custom function to expand abbreviations
+abbv_dir <- function(.x){
+  if (str_detect(.x, "^north\\s|^south\\s|^east\\s|^west\\s")) {
+    .x <- str_replace(.x, "^\\w+", paste0(str_extract(.x, "^\\w"),"."))
+  }
+  .x
+}
+# Perform initial transformations to match party_aff$ma
+.test_ma <- shp$ma$wp %>%
+    mutate_at(vars(TOWN, WARD, PRECINCT), as.character) %>%
+    replace_na(list(WARD = "-")) %>%
+    mutate_at(vars(TOWN, WARD, PRECINCT), tolower) %>%
+    rowwise %>%
+    mutate_at(vars(TOWN), abbv_dir)
+# summarise the geometry column at the precinct level by unioning (removing sub-precincts)
+.test_ma <- .test_ma %>% 
+  # Get just the necessary features for joining
+  select(TOWN, WARD, PRECINCT, geometry) %>% 
+  # Remove the sub precincts
+  mutate_at(vars(PRECINCT), ~str_extract(., "^\\w")) %>% 
+  group_by(TOWN, WARD, PRECINCT) %>%
+  # Union the geometries
+  summarize_all(sf::st_union) %>% 
+  ungroup %>% 
+  inset2("centroid", value = purrr::map(.[["geometry"]], sf::st_centroid))
+
+```
+
+
+```{r 'Join Shapefile with Voting Totals for MA'}
+.test <- left_join(
+  .test_ma,
+  party_aff$ma %>%
+    select(City.Town = `City/Town`,
+           Ward, Pct,
+           support_16 = `Bernie Sanders`,
+           total_16 = `Total Votes Cast`) %>%
+    mutate_at(vars(City.Town, Ward, Pct), tolower),
+  by =  c(
+    TOWN = "City.Town",
+    WARD = "Ward",
+    PRECINCT = "Pct"
+  )
+)
+# Overwrite the original object
+shp$ma$wp <- .test
+
+```
+```{r 'save new shapefile and load it', eval = c(2)}
+saveRDS(shp, "data/shapes_bernie.rds")
+shp <- readRDS("data/shapes_bernie.rds")
 ```
 
 ```{r 'Load Proportions'}

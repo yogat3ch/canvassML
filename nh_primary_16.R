@@ -74,7 +74,8 @@ write_csv(.nh, "data/party_aff_nh.csv")
       rownames_to_column("WP_NAME")
   }) %>% 
   bind_rows %>% 
-  set_names(c('WP_NAME', 'support_16', 'total_16'))
+  set_names(c('WP_NAME', 'support_16', 'total_16')) %>% 
+  replace_na(list(`Bernie Sanders` = 0))
 # Add the total number of voters as a feature for weighted.mean when precincts are aggregated by zip code or congressional district
 
 #Transform county names to make them more amenable to joining with the shapefiles:  Tue Feb 25 17:18:58 2020 ----
