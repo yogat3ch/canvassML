@@ -218,10 +218,11 @@ The *2016 Primary Voting Totals* in the `party_aff` object and the response vari
             mutate_at(vars(WARD), ~str_replace(., "\\s\\-","")) %>% 
             mutate_at(vars(WARD), ~str_replace(., "\\sEntire","")),
           party_aff$nh %>% 
-            select( - Regular, - Absentee),
+            select( - Regular, - Absentee) %>% 
+            rename(total_16 = Total),
           by = c(WARD = "City.Town", COUNTY = "County"))
 .test_na <- fuzzyjoin::stringdist_join(
-  .test %>% filter(is.na(Total)),
+  .test %>% filter(is.na(total_16)),
   party_aff$nh %>% 
             select( - Regular, - Absentee),
   by = c(WARD = "City.Town", COUNTY = "County"),
@@ -240,13 +241,13 @@ The *2016 Primary Voting Totals* in the `party_aff` object and the response vari
   })
 # Bind the hand selected joins and remove extra cols such that it matches .test
 .test_na$out <- do.call(rbind.data.frame, .test_na$out) %>% 
-  select(- Total.x, - City.Town, - County) %>% 
+  select(- total_16.x, - City.Town, - County) %>% 
   select(- matches("dcol")) %>% 
-  rename(Total = "Total.y")
+  rename(total_16 = "total_16.y")
 # Loop over test$Total to find the NA values and replace them with the hand selected values
-.test$Total <- purrr::map2_dbl(.test$Total, .test$WARD,~{
+.test$total_16 <- purrr::map2_dbl(.test$total_16, .test$WARD,~{
   if (is.na(.x)) {
-    .x <- .test_na$out[.test_na$out$WARD == .y, "Total", drop = T]
+    .x <- .test_na$out[.test_na$out$WARD == .y, "total_16", drop = T]
   }
   .x
 })
@@ -294,7 +295,7 @@ summary(.test$support)
 .test_na$out <- do.call(rbind.data.frame, .test_na$out) %>% 
   select(- support_20.x, - total_20.x, - WP_NAME.y, - dcol) %>% 
   rename(support_20 = "support_20.y", total_20 = "total_20.y", WP_NAME = "WP_NAME.x")
-# Loop over test$Total to find the NA values and replace them with the hand selected values
+# Loop over test$total_16 to find the NA values and replace them with the hand selected values
 .test$support_20 <- purrr::map2_dbl(.test$support_20, .test$WP_NAME,~{
   if (is.na(.x)) {
     .x <- .test_na$out[.test_na$out$WP_NAME == .y, "support_20", drop = T]
@@ -332,7 +333,7 @@ shp$ma$wp <- left_join(shp$ma$wp %>%
                            party_aff$ma %>% 
                              select(City.Town = `City/Town`,
                                     Ward, Pct,
-                                    Total = `Total Votes Cast`) %>% 
+                                    total_16 = `Total Votes Cast`) %>% 
                      mutate_at(vars(City.Town, Ward, Pct), tolower),
                            
                            by =  c(TOWN = "City.Town",
@@ -428,7 +429,7 @@ $$\frac{\text{Precinct Intersection with Zip code}}{\text{Total Precinct Area}}$
 ```{r 'Compute intersections between WPs and Zip Codes'}
 .dists <- readRDS("rds/dists.rds")
 #:  Check intersects on the 20 most proximal wards and return Tue Feb 11 17:04:20 2020 ----
-.test <- purrr::pmap(list(.dist = .dists, .st = names(.dists), .shp = shp), function(.dist, .st, .shp){
+compute_intersections <- function(.dist, .st, .shp){
   .dists_20 <- purrr::map(.dist, ~{
     sort(unlist(.x))[1:20]
   })
@@ -457,7 +458,8 @@ $$\frac{\text{Precinct Intersection with Zip code}}{\text{Total Precinct Area}}$
   return(.percent_contained)
    })
   return(.totals)
-})
+}
+.test <- purrr::pmap(list(.dist = .dists, .st = names(.dists), .shp = shp), compute_intersections)
 # Remove all intersections that are < .001 of the total precinct as these are likely artifact
 .props <- purrr::map_depth(.test, 2, ~purrr::keep(.x, ~{.x > .001}))
 saveRDS(.props, "rds/wp_to_zip_props.rds")
@@ -467,11 +469,12 @@ saveRDS(.props, "rds/wp_to_zip_props.rds")
 ```{r 'Apply Proportions to create aggregate values'}
 # First aggregate Voter Totals from 2016 by zip code for NH and MA 
 # The third object will be a vector with name of each object corresponding to a feature, and the value corresponding to the function the feature will be aggregated with
-.test <- purrr::pmap(list(shp, .props, list(c(Total =  "sum"), c(support_20 = "weighted.mean", total_20 = "sum", Total = "sum"))), ~{
+wp_to_zip <- function(..1,..2,..3){
   .shp <- ..1
   .p_zips <- ..2
   .fns <- ..3 # The aggregation functions to apply to the feature
   purrr::map2_dfr(.shp$zip$zip, .p_zips, ~{
+    browser()
     # Get the intersecting W/Ps 
     .wps <- .shp$wp[.shp$wp$WP_NAME %in% names(.y), names(.fns)]
     .p_zip <- .y
@@ -488,26 +491,27 @@ saveRDS(.props, "rds/wp_to_zip_props.rds")
         .out <- round(do.call(.x, .args), 0)
         # if a weighted.mean is requested
       } else if (.x == "weighted.mean") {
-        # weights = total W/P votes * the proportion of the total W/P 
-        .w <- .wps[, "total_20", drop = T] * unlist(.p_zip)
+        # weights = total W/P votes * the proportion of the total W/P
+        .w <- .wps[, paste0("total_", str_extract(.y, "\\d+$")), drop = T] * unlist(.p_zip)
         .args <- list(x = .values, na.rm = T, w = .w)
         .out <- do.call(.x, .args)
       }
     })
   })
-})
+}
+.test <- purrr::pmap(list(shp, .props, list(c(total_16 =  "sum"), c(support_20 = "weighted.mean", total_20 = "sum", total_16 = "sum"))), wp_to_zip)
 # outcomes are in order of the zip codes in the zip object for each state, so they can be cbinded
 shp$ma$zip <- cbind.data.frame(shp$ma$zip, .test$ma) %>%
-  select(zip, Total, Number, everything())
+  select(zip, total_16, Number, everything())
 shp$nh$zip <- cbind.data.frame(shp$nh$zip, .test$nh) %>%
-  select(support_20, zip, Total, Number, everything())
+  select(support_20, zip, total_16, Number, everything())
 ```
 
 Let's make sure the results are consistent and account for missing values.
 ```{r 'Check aggregated values and clean'}
 # Sanity check
-summary(unlist(shp$ma$zip[,c("Total")]))
-purrr::map(shp$nh$zip[,c("support_20", "Total")], ~summary(unlist(.x)))
+summary(unlist(shp$ma$zip[,c("total_16")]))
+purrr::map(shp$nh$zip[,c("support_20", "total_16")], ~summary(unlist(.x)))
 htmltools::tags$p("There appears to be a single missing value in the support_20 response variable. ")
 shp$nh$zip[shp$nh$zip$support_20 %>% {which(is.na(.))},]
 htmltools::tags$p("It appears to be caused by a divide by 0, so we will set this to 0.")
@@ -530,14 +534,14 @@ Voter totals can be computed for each congressional district easily since Wards/
   })
   # sum those contained W/P voter totals
   .totals <- purrr::map(.contains, ~{
-    sum(.shp$wp[.x, "Total", drop = T], na.rm = T)
+    sum(.shp$wp[.x, "total_16", drop = T], na.rm = T)
   })
    
-  .shp$cd$Total <- unlist(.totals)
+  .shp$cd$total_16 <- unlist(.totals)
   return(.shp)
 })
 htmltools::tags$p("Do the results look appropriate?")
-purrr::map(.test, ~summary(unlist(.x$cd$Total)))
+purrr::map(.test, ~summary(unlist(.x$cd$total_16)))
 htmltools::tags$p("Fair voting districts are designed to distribute the vote fairly evenly between them by encompassing close to the same number of voters. The variance in the totals is quite low suggesting that the computed totals for the Congressional Districts are accurate enough.")
 shp <- .test
 ```
@@ -830,10 +834,10 @@ mod <- purrr::pmap(list(mod[c("test", "train")], shp, names(shp)), ~{
   if (..3 == "ma") {
     .shp %<>% 
       # Remove large features
-      select(zip, Total, Number)  
+      select(zip, total_16, Number)  
   } else {
     .shp %<>% 
-      select(support_20, zip, Total, Number)
+      select(support_20, zip, total_16, Number)
   }
   
   left_join(.shp,
@@ -866,7 +870,7 @@ mod$test$support_20 <- (do.call(cbind, predictions)) %>%
   purrr::modify_if(.p = {sign(.) == -1}, .f = ~return(0))
 mod$test$zip <- mod$test_zip
 mod$test %>% 
-  dplyr::select(zip, Total, Number, support_20) %>% 
+  dplyr::select(zip, total_16, Number, support_20) %>% 
   arrange(desc(support_20)) %>% 
   DT::datatable()
 ```
@@ -879,7 +883,7 @@ shp <- readRDS("rds/shapes.rds")
 shp$ma$zip <- left_join(
   shp$ma$zip,
   mod$test,
-  by = c("zip", "Total", "Number")
+  by = c("zip", "total_16", "Number")
 ) %>% sf::st_as_sf()
 ```
 
@@ -1036,8 +1040,7 @@ rv$nh <- .per_support
 ```{r 'Join support in 16 and support in 20 RV'}
 party_aff <- list()
 party_aff$nh <- left_join(.per_support,
-                          rv$nh %>% 
-                            select(- total_20))
+                          rv$nh)
 ```
 
 The number of Yang supporters in the training set can be replaced with the number of Bernie voters from the 2016 election. However, the numbers by Wards/Precincts will need to be extrapolated onto zip codes via the method used previously.
@@ -1058,7 +1061,7 @@ shp$nh$wp$WP_NAME %<>%
 .test <- left_join(shp$nh$wp %>% 
             mutate_at(vars(WARD), ~str_replace(., "\\s\\-","")) %>% 
             mutate_at(vars(WARD), ~str_replace(., "\\sEntire","")) %>% 
-            select(- support_20, - total_20),
+            select(- support_20, - total_20, - total_16),
           party_aff$nh,
           by = "WP_NAME")
 .test_na <- fuzzyjoin::stringdist_join(
@@ -1172,63 +1175,47 @@ abbv_dir <- function(.x){
     WARD = "Ward",
     PRECINCT = "Pct"
   )
-)
+) %>% 
+  mutate(WP_NAME = paste(TOWN, WARD, PRECINCT))
 # Overwrite the original object
 shp$ma$wp <- .test
-
+shp$ma$wp %>% sf::st_as_sf()
 ```
+
 ```{r 'save new shapefile and load it', eval = c(2)}
-saveRDS(shp, "data/shapes_bernie.rds")
-shp <- readRDS("data/shapes_bernie.rds")
+saveRDS(shp, "rds/shapes_bernie.rds")
+shp <- readRDS("rds/shapes_bernie.rds")
 ```
 
-```{r 'Load Proportions'}
-.props <- readRDS("rds/wp_to_zip_props.rds")
+```{r 'Compute distances for new WPs', eval = F}
+rstudioapi::jobRunScript("centroid_distance.R", name = "Centroid Distance", workingDir = getwd(), exportEnv = .GlobalEnv)
 ```
+
+```{r 'Bernie Compute intersections between WPs and Zip Codes', eval = F}
+.dists <- readRDS("rds/dists_bernie.rds")
+.test <- purrr::pmap(list(.dist = .dists, .st = names(.dists), .shp = shp), compute_intersections)
+# Remove all intersections that are < .001 of the total precinct as these are likely artifact
+.props <- purrr::map_depth(.test, 2, ~purrr::keep(.x, ~{.x > .001}))
+saveRDS(.props, "rds/wp_to_zip_props_bernie.rds")
+```
+
 ```{r 'Apply Proportions to create aggregate values'}
+.props <- readRDS("rds/wp_to_zip_props_bernie.rds")
 # First aggregate Voter Totals from 2016 by zip code for NH and MA 
 # The third object will be a vector with name of each object corresponding to a feature, and the value corresponding to the function the feature will be aggregated with
-.test <- purrr::pmap(list(shp, .props, list(c(Number =  "sum"), c(support_20 = "weighted.mean", total_20 = "sum", Total = "sum"))), ~{
-  .shp <- ..1
-  .p_zips <- ..2
-  .fns <- ..3 # The aggregation functions to apply to the feature
-  purrr::map2_dfr(.shp$zip$zip, .p_zips, ~{
-    # Get the intersecting W/Ps 
-    .wps <- .shp$wp[.shp$wp$WP_NAME %in% names(.y), names(.fns)]
-    .p_zip <- .y
-    # for each aggregation function
-    .out <- purrr::imap_dfc(.fns, ~{
-      # Get the values of the feature to be aggregated
-      .values <- .wps[, .y, drop = T] %>% unclass
-      # Multiply by the proportions of the W/P
-      .values <- .values * unlist(.p_zip)
-      # if a sum is requested
-      if (.x == "sum") {
-        .args <- list(x = .values, na.rm = T)
-        # round the sum to a whole person
-        .out <- round(do.call(.x, .args), 0)
-        # if a weighted.mean is requested
-      } else if (.x == "weighted.mean") {
-        # weights = total W/P votes * the proportion of the total W/P 
-        .w <- .wps[, "total_20", drop = T] * unlist(.p_zip)
-        .args <- list(x = .values, na.rm = T, w = .w)
-        .out <- do.call(.x, .args)
-      }
-    })
-  })
-})
+.test <- purrr::pmap(list(shp, .props, list(c(support_16 =  "weighted.mean", total_16 = "sum"), c(support_20 = "weighted.mean", total_16 = "sum", support_16 = "weighted.mean"))), wp_to_zip)
 # outcomes are in order of the zip codes in the zip object for each state, so they can be cbinded
 shp$ma$zip <- cbind.data.frame(shp$ma$zip, .test$ma) %>%
-  select(zip, Total, Number, everything())
+  select(zip, total_16, Number, everything())
 shp$nh$zip <- cbind.data.frame(shp$nh$zip, .test$nh) %>%
-  select(support_20, zip, Total, Number, everything())
+  select(support_20, zip, total_16, Number, everything())
 ```
 
 Let's make sure the results are consistent and account for missing values.
 ```{r 'Check aggregated values and clean'}
 # Sanity check
-summary(unlist(shp$ma$zip[,c("Total")]))
-purrr::map(shp$nh$zip[,c("support_20", "Total")], ~summary(unlist(.x)))
+summary(unlist(shp$ma$zip[,c("total_16")]))
+purrr::map(shp$nh$zip[,c("support_20", "total_16")], ~summary(unlist(.x)))
 htmltools::tags$p("There appears to be a single missing value in the support_20 response variable. ")
 shp$nh$zip[shp$nh$zip$support_20 %>% {which(is.na(.))},]
 htmltools::tags$p("It appears to be caused by a divide by 0, so we will set this to 0.")
