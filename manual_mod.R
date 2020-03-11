@@ -1,9 +1,11 @@
 library(dplyr)
 library(magrittr)
 library(furrr)
+.nf <- readRDS("rds/candidate.rds")
 ## ----allocate------------------------------------------------------------------
-mod <- readRDS('rds/mod.rds')
-predictions <- list()
+mod <- readRDS(paste0(c("rds", .nf, "mod.rds"), collapse = "/"))
+predictions <- try({readRDS(paste0(c("rds", .nf, "predictions.rds"), collapse = "/"))})
+if (class(predictions) == "try-error") predictions <- list()
 rv <- "support_20"
 .rv <- as.symbol(as.character(rv))
 .formula <- as.formula(paste0(rv,' ~ .'))
@@ -52,11 +54,12 @@ doParallel::registerDoParallel(cl$cl)
   savePredictions = 'final')
 # Find tuning parameters for bagEarth
 timing <- new.env()
-.mod <- try(readRDS("rds/caretbagEarth.rds"))
+.mod <- try(readRDS(paste0(c("rds", .nf, "caretbagEarth.rds"), collapse = "/")))
+assign("begin", lubridate::now(), envir = timing)
 if (class(.mod) == "try-error") {
-  message(paste0("Beginning bagEarth at ", assign("begin", lubridate::now(), envir = timing)))
+  message(paste0("Beginning bagEarth at ", e$begin))
   .mod <- caret::train(.formula, data = mod$train, trControl = .train, tuneGrid = .tG, method = 'bagEarth')
-  saveRDS(.mod, "rds/caretbagEarth.rds")
+  saveRDS(.mod, paste0(c("rds", .nf, "caretbagEarth.rds"), collapse = "/"))
 }
 # Get the top performing tuning parameters:  Fri Feb 07 12:54:27 2020 ----
 .top <- .mod$results %>% 
@@ -74,7 +77,7 @@ if (class(.mod) == "try-error") {
   mutate_at(vars(id), as.numeric) %>% 
   # Move the column to last position
   select( - id, id)
-.mods <- try(readRDS("rds/bagEarth.rds"))
+.mods <- try(readRDS(paste0(c("rds", .nf, "bagEarth.rds"), collapse = "/")))
 if (class(.mods) == "try-error") {
   message(paste0("Tuning iterations for bagEarth: ", nrow(.tG)))
   # rerun the model with the additional tuning parameters
@@ -111,12 +114,11 @@ if (class(.mods) == "try-error") {
     message(paste0(timestamp(quiet = T), "\nbagEarth: End tuningGrid iteration: ", id))
     .mod
   }
-  saveRDS(.mods, "rds/bagEarth.rds")
+  saveRDS(.mods, paste0(c("rds", .nf, "bagEarth.rds"), collapse = "/"))
   # attach caret to the bagEarth future prediction
 }
-predictions <- try({readRDS("rds/predictions.rds")})
 if (!HDA::go("predictions$earth")) {
-  message(paste0("Conclude bagEarth build at ", assign("end", lubridate::now(), envir = timing), "... predicting"))
+  message(paste0("Conclude bagEarth build at ", lubridate::now(), "... predicting"))
   .fO <- furrr::future_options(packages = 'caret')
   .pred <- furrr::future_map(.mods, .options = .fO, ~cl$catch({
     predict(.x, newdata = mod$train)
@@ -133,7 +135,7 @@ if (!HDA::go("predictions$earth")) {
         # order and get only 3 indexes
         . %>% 
           order %>% 
-          extract(1:3)
+          magrittr::extract(1:3)
       } else if (sum(.x) <= 3 & sum(.x) > 0) {
         # if between 10 & 1, just return the logical vector
         .x
@@ -148,9 +150,9 @@ if (!HDA::go("predictions$earth")) {
   })
   
   predictions$earth <- .pred %>% do.call(cbind,.) %>% rowMeans()
-  saveRDS(predictions, "rds/predictions.rds")
+  saveRDS(predictions, paste0(c("rds", .nf, "predictions.rds"), collapse = "/"))
 }
-
+assign("end", lubridate::now(), envir = timing)
 message(paste0("Time elapsed: ", timing$end - timing$begin))
 
 
@@ -177,7 +179,7 @@ get.used.pred.names <- function(obj) # obj is an earth object
 
 
 ## ----'manual knn'-----------------------------------------------
-message(paste0("Beginning kknn at ", assign("begin", lubridate::now(), envir = timing)))
+assign("begin", lubridate::now(), envir = timing)
 .tG <- expand.grid(ks = 2:5,
                    distance = 2 ^ -2:2,
                    kernel = c('gaussian', 'optimal'),
@@ -187,8 +189,9 @@ message(paste0("Beginning kknn at ", assign("begin", lubridate::now(), envir = t
   # Move the column to last position
   select( - id, id)
 .f0 <- furrr::future_options(globals = c("mod", ".formula"), packages = 'kknn')
-.mods <- try(readRDS("rds/kknn.rds"))
+.mods <- try(readRDS(paste0(c("rds", .nf, "kknn.rds"), collapse = "/")))
 if (class(.mods) == "try-error") {
+  message(paste0("Beginning kknn at ", timing$begin))
   .mods <- furrr::future_pmap(.tG, ~{
     message(paste0(timestamp(quiet = T), "\nkknn: Now running tuningGrid iteration: ", ..4))
     .mod <- kknn::train.kknn(.formula, data = mod$train, ks = ..1, distance = ..2, kernel = ..3)
@@ -196,7 +199,7 @@ if (class(.mods) == "try-error") {
     .mod
   }, .progress = T, .options = .f0)
   if (any(purrr::map_lgl(.mods, is.null))) stop("model returned NULL values")
-  saveRDS(.mods, "rds/kknn.rds")
+  saveRDS(.mods, paste0(c("rds", .nf, "kknn.rds"), collapse = "/"))
 }
 if (!HDA::go("predictions$kknn")) {
   .pred <- furrr::future_map(.mods, ~{
@@ -227,13 +230,13 @@ if (!HDA::go("predictions$kknn")) {
   })
   HDA::unloadPkgs("kknn")
   predictions$kknn <- .pred %>% do.call(cbind,.) %>% rowMeans()
-  saveRDS(predictions, "rds/predictions.rds")
+  saveRDS(predictions, paste0(c("rds", .nf, "predictions.rds"), collapse = "/"))
 }
 message(paste0("Conclude kknn at ", assign("end", lubridate::now(), envir = timing)))
 message(paste0("Time elapsed: ", timing$end - timing$begin))
 
 ## ----'manual xgboost', eval = F---------------
-.mod <- try(readRDS("rds/caretxgbTree.rds"))
+.mod <- try(readRDS(paste0(c("rds", .nf, "caretxgbTree.rds"), collapse = "/")))
 .tG <- expand.grid(
   nrounds = c(100),
   max_depth = c(3,6,10),
@@ -247,7 +250,7 @@ message(paste0("Time elapsed: ", timing$end - timing$begin))
   mutate_at(vars(id), as.numeric) %>% 
   # Move the column to last position
   select( - id, id)
-if (class(.mods) == "try-error") {
+if (class(.mod) == "try-error") {
     .train <- caret::trainControl(
     method = 'cv',
     number = 4,
@@ -258,9 +261,10 @@ if (class(.mods) == "try-error") {
     savePredictions = 'final',
     verboseIter = T)
     .mod <- caret::train(.formula, data = mod$train, trControl = .train, tuneGrid = .tG[-length(.tG)], method = 'xgbTree', nthread = 2, verbose = 1)
-    saveRDS(.mod, "rds/caretxgbTree.rds")
+    saveRDS(.mod, paste0(c("rds", .nf, "caretxgbTree.rds"), collapse = "/"))
 }
-.mods <- try(readRDS("rds/xgboost.rds"))
+.mods <- try(readRDS(paste0(c("rds", .nf, "xgboost.rds"), collapse = "/")))
+assign("begin", lubridate::now(), envir = timing)
 if (class(.mods) == "try-error") {
 .top <- .mod$results %>% 
       arrange(desc(Rsquared)) %>% 
@@ -271,7 +275,7 @@ if (class(.mods) == "try-error") {
       mutate_at(vars(id), as.numeric) %>% 
       # Move the column to last position
       select( - id, id)
-message(paste0("Beginning xgBoost at ", assign("begin", lubridate::now(), envir = timing)))
+message(paste0("Beginning xgBoost at ", timing$begin))
   .f0 <- furrr::future_options(packages = c('xgboost'), globals = c("mod", "rv"))
   .mods <- furrr::future_pmap(.tG, ~ cl$catch({
     message(paste0(timestamp(quiet = T), "\nxgboost: Now running tuningGrid iteration: ", ..8))
@@ -281,6 +285,8 @@ message(paste0("Beginning xgBoost at ", assign("begin", lubridate::now(), envir 
     .mod
   }), .progress = T, .options = .f0)
   if (any(purrr::map_lgl(.mods, is.null))) stop("model returned NULL values")
+  saveRDS(.mods, paste0(c("rds", .nf, "xgboost.rds"), collapse = "/"), compress = F)
+  
 }
 ## ----'manual xgboost cont'--------------------------------
 if (!HDA::go("predictions$xgboost")) {
@@ -294,17 +300,16 @@ if (!HDA::go("predictions$xgboost")) {
   .rmse <- purrr::map_dbl(.pred, ~{caret::RMSE(mod$train[[rv]], .x)})
   .top3 <- percent_rank(.rmse) %>%
     {
-      # get the top 10%
-      .x <- (. < .1)
+      
+      
       # if more than 10
-      if (sum(.x) > 3) {
+      if (sum((. < .1)) > 3) {
         # order and get only 3 indexes
-        . %>% 
-          order %>% 
-          extract(1:3)
-      } else if (sum(.x) <= 3 & sum(.x) > 0) {
+        order(.) %>% 
+          magrittr::extract(1:3)
+      } else if (sum((. < .1)) <= 3 & sum((. < .1)) > 0) {
         # if between 10 & 1, just return the logical vector
-        .x
+        (. < .1)
       } else {
         # if none are above .90%, just return all
         rep(TRUE, length(.))
@@ -313,10 +318,10 @@ if (!HDA::go("predictions$xgboost")) {
   .pred <- purrr::map(.mods[.top3], ~{
     predict(.x, newdata = 
               xgboost::xgb.DMatrix(
-                as.matrix(mod$test)))
+                as.matrix(mod$test[!names(mod$test) %in% rv])))
   })
   predictions$xgboost <- .pred %>% do.call(cbind,.) %>% rowMeans()
-  saveRDS(predictions, "rds/predictions.rds")
+  saveRDS(predictions, paste0(c("rds", .nf, "predictions.rds"), collapse = "/"))
 }
 
 message(paste0("Conclude xgBoost at ", assign("end", lubridate::now(), envir = timing)))

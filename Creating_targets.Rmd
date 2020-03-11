@@ -118,8 +118,8 @@ party_aff$nh  <- read_csv("data/nh_primary_16.csv")
 
 # Load Data for Models
 Load the congressional, precinct, and zip code spatial data. 
-Unzip the shapefiles.
 Links:
+Unzip the shapefiles.
 
   - [NH Political Districts (Wards/Precincts)](https://github.com/nvkelso/election-geodata/tree/master/data)
   - [NH Congressional Districts](https://hub.arcgis.com/datasets/NHGRANIT::new-hampshire-congressional-district-boundaries-2012)
@@ -239,18 +239,27 @@ The *2016 Primary Voting Totals* in the `party_aff` object and the response vari
   .out <- .x %>%
     magrittr::extract(.y,)
   })
+
 # Bind the hand selected joins and remove extra cols such that it matches .test
-.test_na$out <- do.call(rbind.data.frame, .test_na$out) %>% 
-  select(- total_16.x, - City.Town, - County) %>% 
+.out <- do.call(rbind.data.frame, .test_na$out) %>% 
+  select(- total_16, - City.Town, - County) %>% 
   select(- matches("dcol")) %>% 
-  rename(total_16 = "total_16.y")
-# Loop over test$Total to find the NA values and replace them with the hand selected values
-.test$total_16 <- purrr::map2_dbl(.test$total_16, .test$WARD,~{
-  if (is.na(.x)) {
-    .x <- .test_na$out[.test_na$out$WARD == .y, "total_16", drop = T]
-  }
-  .x
-})
+  rename(total_16 = "Total")
+Derry <- function(.name, .total){
+    if (str_detect(.name, "Derry")) round(.total / 4, 0)
+    else
+      .total
+    }
+.out %<>% rowwise %>% 
+  mutate(total_16.x = Derry(WARD, total_16)) %>% 
+  select(- total_16) %>% 
+  rename(total_16 = total_16.x)
+# Replace values with the hand selected values
+.test[match(.test$WARD, .out$WARD) %>% {
+  !is.na(.)
+}, ] <- .out[match(.test$WARD, .out$WARD)[match(.test$WARD, .out$WARD) %>% {
+  !is.na(.)
+}], names(.test)]
 # Overwrite the original object
 shp$nh$wp <- .test
 ```
@@ -285,29 +294,36 @@ summary(.test$support)
 # Split each of the missing matches up, and view them 1 by 1 to select the right match by hand
 .test_na <- unique(.test_na$WP_NAME.x) %>% purrr::map(~{filter(.test_na, WP_NAME.x == .x) %>% head()})
 # Extract the entry that most closely corresponds (hand selected)
-.test_na$ind <-  c(`1` = 1, `2` = 1, `3` = 1, `4` = 2, `5` = 1, `6` = 1, `7` = 1, `8` = 1, `9` = 1, `10` = 1, `11` = 1, `12` = 1, `13` = 1, `14` = 1, `15` = 1, `16` = 1, `17` = 1, `18` = 2, `19` = 2, `20` = 2, `21` = 2, `22` = 1, `23` = 3)
+.test_na$ind <-  c(`1` = 1, `2` = 2, `3` = 1, `4` = 1, `5` = 1, `6` = 1, `7` = 1, `8` = 1, `9` = 1, `10` = 1, `11` = 1, `12` = 1, `13` = 2, `14` = 2, `15` = 2, `16` = 2, `17` = 1, `18` = 3)
 # Loop and extract the appropriate row. For Derry, the ward that has been split into 4 wards (or vice versa), divide the party_aff data by 4 to match the 4 wards in the shapefile
 .test_na$out <- purrr::map2(.test_na[1:length(.test_na$ind)], .test_na$ind, ~{
   .out <- .x %>%
     magrittr::extract(.y,)
   })
+
 # Bind the hand selected joins and remove extra cols such that it matches .test
-.test_na$out <- do.call(rbind.data.frame, .test_na$out) %>% 
+.out <- do.call(rbind.data.frame, .test_na$out) %>% 
   select(- support_20.x, - total_20.x, - WP_NAME.y, - dcol) %>% 
-  rename(support_20 = "support_20.y", total_20 = "total_20.y", WP_NAME = "WP_NAME.x")
-# Loop over test$total_16 to find the NA values and replace them with the hand selected values
-.test$support_20 <- purrr::map2_dbl(.test$support_20, .test$WP_NAME,~{
-  if (is.na(.x)) {
-    .x <- .test_na$out[.test_na$out$WP_NAME == .y, "support_20", drop = T]
-  }
-  .x
-})
-.test$total_20 <- purrr::map2_dbl(.test$total_20, .test$WP_NAME,~{
-  if (is.na(.x)) {
-    .x <- .test_na$out[.test_na$out$WP_NAME == .y, "total_20", drop = T]
-  }
-  .x
-})
+  rename_at(vars(matches("\\.y$")), ~{str_replace(., "\\.y$", "")}) %>% 
+  rename_at(vars(matches("\\.x$")), ~{str_replace(., "\\.x$", "")})
+  
+Derry <- function(.name, .total){
+    if (str_detect(.name, "Derry")) round(.total / 4, 0)
+    else
+      .total
+    }
+.out %<>% rowwise %>% 
+  mutate(total_16.x = Derry(WARD, total_16)) %>% 
+  select(- total_16) %>% 
+  rename(total_16 = total_16.x)
+# Replace values with the hand selected values
+.test[match(.test$WARD, .out$WARD) %>% {
+  !is.na(.)
+}, ] <- .out[match(.test$WARD, .out$WARD)[match(.test$WARD, .out$WARD) %>% {
+  !is.na(.)
+}], names(.test)]
+
+
 # Overwrite the original object
 shp$nh$wp <- .test
 ```
@@ -426,7 +442,7 @@ rstudioapi::jobRunScript("centroid_distance.R", name = "Centroid Distance", work
 2. The intersection of the ward area with the zip code area is computed.
 3. A proportion of the total precinct is created as follows:
 $$\frac{\text{Precinct Intersection with Zip code}}{\text{Total Precinct Area}}$$
-```{r 'Compute intersections between WPs and Zip Codes'}
+```{r 'Compute intersections between WPs and Zip Codes', eval = F}
 .dists <- readRDS("rds/dists.rds")
 #:  Check intersects on the 20 most proximal wards and return Tue Feb 11 17:04:20 2020 ----
 compute_intersections <- function(.dist, .st, .shp){
@@ -462,24 +478,24 @@ compute_intersections <- function(.dist, .st, .shp){
 .test <- purrr::pmap(list(.dist = .dists, .st = names(.dists), .shp = shp), compute_intersections)
 # Remove all intersections that are < .001 of the total precinct as these are likely artifact
 .props <- purrr::map_depth(.test, 2, ~purrr::keep(.x, ~{.x > .001}))
-saveRDS(.props, "rds/wp_to_zip_props.rds")
 ```
-
+```{r 'Save Proportions', eval = c(2)}
+saveRDS(.props, "rds/wp_to_zip_props.rds")
+.props <- readRDS("rds/wp_to_zip_props.rds")
+```
 
 ```{r 'Apply Proportions to create aggregate values'}
 # First aggregate Voter Totals from 2016 by zip code for NH and MA 
 # The third object will be a vector with name of each object corresponding to a feature, and the value corresponding to the function the feature will be aggregated with
-wp_to_zip <- function(..1,..2,..3){
-  .shp <- ..1
-  .p_zips <- ..2
-  .fns <- ..3 # The aggregation functions to apply to the feature
+wp_to_zip <- function(.shp, .p_zips, .fns, .debug = F){
   purrr::map2_dfr(.shp$zip$zip, .p_zips, ~{
-    browser()
     # Get the intersecting W/Ps 
-    .wps <- .shp$wp[.shp$wp$WP_NAME %in% names(.y), names(.fns)]
+    .zip <- .x
+    .wps <- .shp$wp[.shp$wp$WP_NAME %in% names(.y), ]
     .p_zip <- .y
     # for each aggregation function
     .out <- purrr::imap_dfc(.fns, ~{
+      if (.debug) print(paste("Zip: ", .zip, " | Value: ", .y))
       # Get the values of the feature to be aggregated
       .values <- .wps[, .y, drop = T] %>% unclass
       # Multiply by the proportions of the W/P
@@ -851,6 +867,7 @@ These are ready to be trained on.
 Predictive models are trained in a background task because of their computationally intensive nature. The model building code is echoed in the following chunk.
 ```{r 'save data and train', eval = F}
 saveRDS(mod, "rds/mod.rds")
+saveRDS(NULL, "rds/candidate.rds")
 rstudioapi::jobRunScript(path = "manual_mod.R", name = "Model Build", workingDir = here::here(), exportEnv = "R_GlobalEnv")
 ```
 ```{r 'Echo manual_mod', eval = F, code = readLines("manual_mod.R")}
@@ -1030,17 +1047,27 @@ Since Mr. Yang dropped out of the race before the Massachusetts primary, there i
 
 ## Replace Response Variable and Supporter Numbers
 The response variable in the training model will be the number of Sanders voters in the 2020 NH primary
-```{r 'Load Variables'}
-rv <- list(ma = NA, nh = NA)
+```{r 'Create new rds directory', eval = F}
 .candidate <- 'Sanders'
+saveRDS(.candidate, "rds/candidate.rds")
+dir.create(paste0(c("rds",.candidate), collapse = "/"))
+```
+
+```{r 'Load Variables'}
+.nf <- readRDS("rds/newfile.rds")
+rv <- list(ma = NA, nh = NA)
 source("nh_primary_20.R")
 rv$nh <- .per_support
-.per_support <- read_csv("data/nh_primary_16_sanders.csv")
+source("ma_primary_20.R")
+rv$ma <- .per_support 
 ```
 ```{r 'Join support in 16 and support in 20 RV'}
+.per_support <- read_csv("data/nh_primary_16_sanders.csv")
 party_aff <- list()
 party_aff$nh <- left_join(.per_support,
                           rv$nh)
+party_aff$ma <- read_csv("data/ma_primary_16_sanders.csv")
+
 ```
 
 The number of Yang supporters in the training set can be replaced with the number of Bernie voters from the 2016 election. However, the numbers by Wards/Precincts will need to be extrapolated onto zip codes via the method used previously.
@@ -1086,7 +1113,7 @@ shp$nh$wp$WP_NAME %<>%
 .out <- do.call(rbind.data.frame, .out) %>% 
   select( - matches(".x$")) %>% 
   select(- matches("dcol$")) %>% 
-  rename_at(vars(matches(".y$")), ~{str_replace(., ".y$", "")})
+  rename_at(vars(matches("\\.y$")), ~{str_replace(., "\\.y$", "")})
 # Loop and extract the appropriate row. For Derry, the ward that has been split into 4 wards (or vice versa), divide the party_aff data by 4 to match the 4 wards in the shapefile
 Derry <- function(.name, .total){
     if (str_detect(.name, "Derry")) round(.total / 4, 0)
@@ -1096,8 +1123,7 @@ Derry <- function(.name, .total){
 .out %<>% rowwise %>% 
   mutate(total_16.x = Derry(WP_NAME, total_16)) %>% 
   select(- total_16) %>% 
-  rename(total_16 = total_16.x,
-         geometry = geomet)
+  rename(total_16 = total_16.x)
 # Replace values with the hand selected values
 .test[match(.test$WARD, .out$WARD) %>% {
   !is.na(.)
@@ -1109,28 +1135,6 @@ shp$nh$wp <- .test
 ```
 
 #### MA: Join Supporter Numbers to WP
-```{r 'Clean Party Affiliation file'}
-party_aff$ma <- read_csv("data/ma_primary_16.csv")
-party_aff$ma %<>% 
-  # Remove the AE, AW from Chicopee ward names
-  mutate_at(vars(Pct), ~{str_extract(., "^\\w")}) %>%
-  # re-summarize
-  group_by(`City/Town`, Ward, Pct) %>% 
-  summarize_all(sum) 
-# Acton Precinct 5 is missing. We'll replace it with the mean
-party_aff$ma <- party_aff$ma %>%
-  filter(str_detect(`City/Town`, "Acton")) %>% 
-  select( - Ward, - Pct) %>% 
-  group_by(`City/Town`) %>% 
-  summarise_all(~round(mean(.),0)) %>% 
-  magrittr::inset("Ward", value = "-") %>% 
-  magrittr::inset("Pct", value = "5") %>% 
-  rbind.data.frame(party_aff$ma) %>% 
-  ungroup
-# Manchester-by-the-sea is referred to as Manchester in the shapefile
-party_aff$ma[str_detect(party_aff$ma$`City/Town`, "Manchester"), "City/Town"] <- "manchester"
-```
-
 ```{r 'Transform MA Shapefiles for Join'}
 # Custom function to expand abbreviations
 abbv_dir <- function(.x){
@@ -1161,15 +1165,14 @@ abbv_dir <- function(.x){
 ```
 
 
-```{r 'Join Shapefile with Voting Totals for MA'}
+
+
+
+
+```{r 'Bernie Join Shapefile with Voting Totals for MA'}
 .test <- left_join(
   .test_ma,
-  party_aff$ma %>%
-    select(City.Town = `City/Town`,
-           Ward, Pct,
-           support_16 = `Bernie Sanders`,
-           total_16 = `Total Votes Cast`) %>%
-    mutate_at(vars(City.Town, Ward, Pct), tolower),
+  party_aff$ma,
   by =  c(
     TOWN = "City.Town",
     WARD = "Ward",
@@ -1177,14 +1180,25 @@ abbv_dir <- function(.x){
   )
 ) %>% 
   mutate(WP_NAME = paste(TOWN, WARD, PRECINCT))
+# Bind the response variable for validation
+.test <- left_join(
+  .test,
+  rv$ma,
+  by = "WP_NAME"
+)
+# NA Check
+purrr::map(.test %>% select(ends_with("20")), summary)
+# There's a divide by 0 for Norton - 3
+.test[with(.test, {which(is.na(support_20) | is.na(total_20))}), "support_20"] <- 0
+
 # Overwrite the original object
 shp$ma$wp <- .test
-shp$ma$wp %>% sf::st_as_sf()
+shp$ma$wp %<>% sf::st_as_sf()
 ```
 
 ```{r 'save new shapefile and load it', eval = c(2)}
-saveRDS(shp, "rds/shapes_bernie.rds")
-shp <- readRDS("rds/shapes_bernie.rds")
+saveRDS(shp, paste0(c("rds" , .nf, "shapes.rds"), collapse = "/"))
+shp <- readRDS(paste0(c("rds" , .nf, "shapes.rds"), collapse = "/"))
 ```
 
 ```{r 'Compute distances for new WPs', eval = F}
@@ -1192,37 +1206,95 @@ rstudioapi::jobRunScript("centroid_distance.R", name = "Centroid Distance", work
 ```
 
 ```{r 'Bernie Compute intersections between WPs and Zip Codes', eval = F}
-.dists <- readRDS("rds/dists_bernie.rds")
+.dists <- readRDS(paste0(c("rds" , .nf, "dists.rds"), collapse  = "/"))
 .test <- purrr::pmap(list(.dist = .dists, .st = names(.dists), .shp = shp), compute_intersections)
 # Remove all intersections that are < .001 of the total precinct as these are likely artifact
 .props <- purrr::map_depth(.test, 2, ~purrr::keep(.x, ~{.x > .001}))
-saveRDS(.props, "rds/wp_to_zip_props_bernie.rds")
+saveRDS(.props, paste0(c("rds" , .nf, "wp_to_zip_props.rds"), collapse  = "/"))
 ```
 
-```{r 'Apply Proportions to create aggregate values'}
-.props <- readRDS("rds/wp_to_zip_props_bernie.rds")
+```{r 'Bernie Apply Proportions to create aggregate values'}
+.props <- readRDS(paste0(c("rds" , .nf, "wp_to_zip_props.rds"), collapse  = "/"))
 # First aggregate Voter Totals from 2016 by zip code for NH and MA 
 # The third object will be a vector with name of each object corresponding to a feature, and the value corresponding to the function the feature will be aggregated with
-.test <- purrr::pmap(list(shp, .props, list(c(support_16 =  "weighted.mean", total_16 = "sum"), c(support_20 = "weighted.mean", total_16 = "sum", support_16 = "weighted.mean"))), wp_to_zip)
+.test <- purrr::pmap(list(shp, .props, list(c(support_20 = "weighted.mean", total_16 = "sum", support_16 = "weighted.mean"), c(support_20 = "weighted.mean", total_16 = "sum", support_16 = "weighted.mean"))), wp_to_zip)
+.na <- map(.test$ma, ~which(is.na(.))) %>% 
+  unlist %>% 
+  unique
+shp$ma$zip[.na, ]
+# These NA were caused by divide by 0 during the weighted mean most likely, not sure about Brighton though. We'll replace them all with 0
+.test %<>% map_depth(2, replace_na, 0)
 # outcomes are in order of the zip codes in the zip object for each state, so they can be cbinded
-shp$ma$zip <- cbind.data.frame(shp$ma$zip, .test$ma) %>%
-  select(zip, total_16, Number, everything())
-shp$nh$zip <- cbind.data.frame(shp$nh$zip, .test$nh) %>%
-  select(support_20, zip, total_16, Number, everything())
+shp$ma$zip <- cbind.data.frame(shp$ma$zip %>% select(- total_16, - Number), .test$ma) %>%
+  select(support_20, zip, total_16, support_16, everything())
+shp$nh$zip <- cbind.data.frame(
+  shp$nh$zip %>% 
+    select( - total_16, - support_20, - total_20), .test$nh) %>%
+  select(support_20, zip, total_16, support_16, everything())
 ```
 
 Let's make sure the results are consistent and account for missing values.
-```{r 'Check aggregated values and clean'}
+```{r 'Bernie Check aggregated values and clean'}
 # Sanity check
-summary(unlist(shp$ma$zip[,c("total_16")]))
-purrr::map(shp$nh$zip[,c("support_20", "total_16")], ~summary(unlist(.x)))
-htmltools::tags$p("There appears to be a single missing value in the support_20 response variable. ")
-shp$nh$zip[shp$nh$zip$support_20 %>% {which(is.na(.))},]
-htmltools::tags$p("It appears to be caused by a divide by 0, so we will set this to 0.")
-shp$nh$zip[shp$nh$zip$support_20 %>% {which(is.na(.))}, "support_20"] <- 0
+summary(shp$ma$zip[,c("support_20", "total_16", "support_16")])
+summary(shp$nh$zip[,c("support_20", "total_16", "support_16")])
+```
+```{r 'Load training and test data', eval = F}
+mod <- readRDS("rds/mod.rds")
 ```
 
+The new data needs to be bound with the previous training and test data sets.
+```{r 'Join training and test data with new zip aggregates', eval = F}
+mod_bernie <- list()
+# Training data
+.test <- left_join(
+cbind(zip = mod$train_zip, mod$train %>% select(- support_20)) %>% 
+  select(- Number, - Total),
+shp$nh$zip %>% 
+  select(zip, ends_with("16"), support_20),
+by = "zip"
+) %>%
+  select(support_20, ends_with("16"), everything())
+mod_bernie$train <- .test %>% select(-zip)
+mod_bernie$train_zip <- .test$zip
+# Test data
+.test <- left_join(
+cbind(zip = mod$test_zip, mod$test) %>% 
+  select(- Number, - Total),
+shp$ma$zip %>% 
+  select(zip, ends_with("16"), support_20),
+by = "zip"
+) %>%
+  select(support_20, ends_with("16"), everything())
+mod_bernie$test <- .test %>% select(-zip)
+mod_bernie$test_zip <- .test$zip
+```+
 
+#### Build `r .candidate` model
+```{r 'Save Bernie mod', eval = F}
+saveRDS(mod_bernie, paste0(c("rds" , .nf, "mod.rds"), collapse  = "/"))
+```
+```{r 'Train on bernie data', eval = F}
+rstudioapi::jobRunScript(path = "manual_mod.R", name = "Model Build", workingDir = here::here(), exportEnv = "R_GlobalEnv")
+```
+
+#### Validation
+```{r 'Compare to actual results'}
+readRDS(paste0(c("rds" , .nf, "mod.rds"), collapse  = "/"))
+readRDS(paste0(c("rds" , .nf, "predictions.rds"), collapse  = "/"))
+.cor <- cor(y = mod$test$support_20, do.call(cbind, predictions) %>% rowMeans())
+.mae <- caret::MAE(mod$test$support_20, do.call(cbind, predictions) %>% rowMeans())
+htmltools::tags$p("What is the spread of error?")
+data.frame(error = mod$test$support_20 - do.call(cbind, predictions) %>% rowMeans()) %>% 
+  mutate(x = seq(range(error)[1], range(error)[2], length.out = nrow(.))) %>% 
+  mutate(y = dnorm(x, mean(error), sd(error))) %>% 
+ggplot(aes(x = error, y = ..density..)) + 
+  geom_histogram(binwidth = .005, fill = "grey", color = "black") +
+  geom_line(aes(x = x, y = y), color = "blue") +
+  ggtitle("Spread of Predictive Error")+
+  theme(plot.title = element_text(hjust = .5),plot.subtitle = element_text(hjust = .5))
+```
+As can be observed from the plot above, the vast majority or error lies between `r -round(.mae,3)` and `r round(.mae, 3)`, this is pretty significant given the threshold for delegates is 15%, but if we take a look at the Pearson's R: `r round(.cor,3)`, we find a relatively large correlation between the predictions and the actual votes. Though the spread of error may be relatively high, the correlation coefficient indicates that we can make comparisons between zip codes reliably to optimize the targeting of canvassing and mailing efforts.
 
 I hope this analysis was interesting and educational! 
 If you have comments, questions, feedback or otherwise just want to get in touch, please feel free to [contact me.](http:://themindful.life/contact)
