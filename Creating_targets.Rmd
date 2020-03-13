@@ -508,7 +508,7 @@ saveRDS(.props, "rds/wp_to_zip_props.rds")
 # The third object will be a vector with name of each object corresponding to a feature, and the value corresponding to the function the feature will be aggregated with
 wp_to_zip <- function(.shp, .p_zips, .fns){
   purrr::map2_dfr(.shp$zip$zip, .p_zips, ~{
-    browser()
+    #browser()
     # Get the intersecting W/Ps 
     .zip <- .x
     .wps <- .shp$wp[.shp$wp$WP_NAME %in% names(.y), ]

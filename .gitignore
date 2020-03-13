@@ -11,3 +11,4 @@ rds/
 /files/
 *.utf8.md
 *.knit.md
+backup/
