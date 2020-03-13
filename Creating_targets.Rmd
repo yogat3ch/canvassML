@@ -26,7 +26,9 @@ library(dtplyr)
 library(magrittr)
 library(htmltools)
 ```
-```{r, results='hide', echo = F}
+```{r, echo = F, cache = F}
+if (isTRUE(getOption('knitr.in.progress'))) {
+  message("I am knitting")
 tagList(
   div(id = "include-iframeResizer"),
   htmlDependency(
@@ -38,8 +40,9 @@ tagList(
     all_files = F
     )
 )
-
+}
 ```
+
 # Intro
 All code for this project is hosted at [github.com/yogat3ch/canvassML](http://github.com/yogat3ch/canvassML)
 
@@ -503,15 +506,16 @@ saveRDS(.props, "rds/wp_to_zip_props.rds")
 ```{r 'Apply Proportions to create aggregate values'}
 # First aggregate Voter Totals from 2016 by zip code for NH and MA 
 # The third object will be a vector with name of each object corresponding to a feature, and the value corresponding to the function the feature will be aggregated with
-wp_to_zip <- function(.shp, .p_zips, .fns, .debug = F){
+wp_to_zip <- function(.shp, .p_zips, .fns){
   purrr::map2_dfr(.shp$zip$zip, .p_zips, ~{
+    browser()
     # Get the intersecting W/Ps 
     .zip <- .x
     .wps <- .shp$wp[.shp$wp$WP_NAME %in% names(.y), ]
     .p_zip <- .y
     # for each aggregation function
     .out <- purrr::imap_dfc(.fns, ~{
-      if (.debug) print(paste("Zip: ", .zip, " | Value: ", .y))
+      # if (.debug) print(paste("Zip: ", .zip, " | Value: ", .y))
       # Get the values of the feature to be aggregated
       .values <- .wps[, .y, drop = T] %>% unclass
       # if a sum is requested
@@ -531,6 +535,7 @@ wp_to_zip <- function(.shp, .p_zips, .fns, .debug = F){
     })
   })
 }
+message(glue::glue("Shapes: {class(shp)} Length: {length(shp)}, Props: {class(.props)} Length: {length(.props)}"))
 .test <- purrr::pmap(list(shp, .props, list(c(total_16 =  "sum"), c(support_20 = "weighted.mean", total_20 = "sum", total_16 = "sum"))), wp_to_zip)
 # outcomes are in order of the zip codes in the zip object for each state, so they can be cbinded
 shp$ma$zip <- cbind.data.frame(shp$ma$zip, .test$ma) %>%
