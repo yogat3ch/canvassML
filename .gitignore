@@ -12,3 +12,4 @@ rds/
 *.utf8.md
 *.knit.md
 backup/
+*_log*

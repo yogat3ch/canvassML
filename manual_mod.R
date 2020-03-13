@@ -33,7 +33,7 @@ start_cluster <- function(ac, timeout = 60*60*24*30, outfile){
   return(list(cl = cl, catch = catch))
 }
 
-cl <- start_cluster(6, outfile = "out.txt")
+cl <- start_cluster(6, outfile = "out_log.txt")
 future::plan(future::cluster, workers = cl$cl)
 doParallel::registerDoParallel(cl$cl)
 ## ----'manual model build earth'------------------------------------------------

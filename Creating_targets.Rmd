@@ -1227,10 +1227,11 @@ shp <- readRDS(paste0(c("rds" , .nf, "shapes.rds"), collapse = "/"))
 ```
 
 #### Recompute WP values to Zip codes
+Compute centroid distances.
 ```{r 'Compute distances for new WPs', eval = F}
 rstudioapi::jobRunScript("centroid_distance.R", name = "Centroid Distance", workingDir = getwd(), exportEnv = .GlobalEnv)
 ```
-
+Compute intersections between zips and WPs.
 ```{r 'Bernie Compute intersections between WPs and Zip Codes', eval = F}
 .dists <- readRDS(paste0(c("rds" , .nf, "dists.rds"), collapse  = "/"))
 .test <- purrr::pmap(list(.dist = .dists, .st = names(.dists), .shp = shp), compute_intersections)
@@ -1238,11 +1239,11 @@ rstudioapi::jobRunScript("centroid_distance.R", name = "Centroid Distance", work
 .props <- purrr::map_depth(.test, 2, ~purrr::keep(.x, ~{.x > .001}))
 saveRDS(.props, paste0(c("rds" , .nf, "wp_to_zip_props.rds"), collapse  = "/"))
 ```
-
+Apply the proportions within zip codes and aggregate.
 ```{r 'Bernie Apply Proportions to create aggregate values'}
 .props <- readRDS(paste0(c("rds" , .nf, "wp_to_zip_props.rds"), collapse  = "/"))
 # First aggregate Voter Totals from 2016 by zip code for NH and MA 
-# The third object will be a vector with name of each object corresponding to a feature, and the value corresponding to the function the feature will be aggregated with
+# The third object will be a vector with name of each object corresponding to a feature, and the value corresponding to the function with which the feature will be aggregated
 .test <- purrr::pmap(list(shp, .props, list(c(support_20 = "weighted.mean", total_16 = "sum", support_16 = "weighted.mean"), c(support_20 = "weighted.mean", total_16 = "sum", support_16 = "weighted.mean"))), wp_to_zip)
 .na <- map(.test$ma, ~which(is.na(.))) %>% 
   unlist %>% 
