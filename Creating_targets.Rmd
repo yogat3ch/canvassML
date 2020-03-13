@@ -24,6 +24,21 @@ set.seed(1)
 library(tidyverse)
 library(dtplyr)
 library(magrittr)
+library(htmltools)
+```
+```{r, results='hide', echo = F}
+tagList(
+  div(id = "include-iframeResizer"),
+  htmlDependency(
+    name = "iframeResizer",
+    version = "4.2.8",
+    src = c(href = "https://cdn.jsdelivr.net/npm/iframe-resizer@4.2.8/js/",
+            file = "inst"),
+    script = "iframeResizer.contentWindow.min.js",
+    all_files = F
+    )
+)
+
 ```
 # Intro
 All code for this project is hosted at [github.com/yogat3ch/canvassML](http://github.com/yogat3ch/canvassML)
@@ -65,6 +80,7 @@ However, better results, aggregated by precinct were made available by the New H
 ```{r 'Load 2020 NH Primary Results'}
 rv <- list(ma = NA, nh = NA)
 .candidate <- 'Yang'
+saveRDS(NULL, "rds/candidate.rds")
 source("nh_primary_20.R")
 rv$nh <- .per_support
 ```
@@ -498,10 +514,10 @@ wp_to_zip <- function(.shp, .p_zips, .fns, .debug = F){
       if (.debug) print(paste("Zip: ", .zip, " | Value: ", .y))
       # Get the values of the feature to be aggregated
       .values <- .wps[, .y, drop = T] %>% unclass
-      # Multiply by the proportions of the W/P
-      .values <- .values * unlist(.p_zip)
       # if a sum is requested
       if (.x == "sum") {
+        # Multiply by the proportions of the W/P
+        .values <- .values * unlist(.p_zip)
         .args <- list(x = .values, na.rm = T)
         # round the sum to a whole person
         .out <- round(do.call(.x, .args), 0)
@@ -867,7 +883,6 @@ These are ready to be trained on.
 Predictive models are trained in a background task because of their computationally intensive nature. The model building code is echoed in the following chunk.
 ```{r 'save data and train', eval = F}
 saveRDS(mod, "rds/mod.rds")
-saveRDS(NULL, "rds/candidate.rds")
 rstudioapi::jobRunScript(path = "manual_mod.R", name = "Model Build", workingDir = here::here(), exportEnv = "R_GlobalEnv")
 ```
 ```{r 'Echo manual_mod', eval = F, code = readLines("manual_mod.R")}
@@ -905,7 +920,7 @@ shp$ma$zip <- left_join(
 ```
 
 
-```{r 'plot shapefile', cache = F}
+```{r 'plot shapefile'}
 library(sf)
 .cols <- c(
     dem_blue = "#0015bc",
@@ -961,6 +976,8 @@ make_breaks <- function(breaks){
 )
 htmltools::tags$p("Filled by probability of support among Democrats")
 htmltools::tags$p("Probability derived from similar census demographics to New Hampshire")
+```
+```{r 'plotly shapefile', cache = F}
 htmltools::tags$p("Interactive Plotly version below:")
 plotly::ggplotly(ma_map, tooltip = c(P = "fill", zip = "text", label = "label")) %>%
   plotly::layout(autosize = F,
@@ -975,8 +992,7 @@ plotly::ggplotly(ma_map, tooltip = c(P = "fill", zip = "text", label = "label"))
 ```
 
 
-```{r 'plot yg', cache = F}
-
+```{r 'plot yg'}
 (
   ma_yg_map <- ggplot() +
     geom_sf(
@@ -1006,6 +1022,10 @@ plotly::ggplotly(ma_map, tooltip = c(P = "fill", zip = "text", label = "label"))
 )
 
 htmltools::HTML(glue::glue("<p>Supporter Numbers across MA</p><p><em>Legend:</em> { paste(names(quantile(mod$test$Number)), quantile(mod$test$Number), sep = ': ') %>% paste(collapse = ', ') }</p>"))
+```
+
+
+```{r 'plotly yg', cache = F}
 htmltools::tags$p("Interactive Plotly version below:")
 plotly::ggplotly(ma_yg_map, tooltip = c("fill", zip = "text", label = "label")) %>%
   plotly::layout(autosize = F, margin = list(l = 50, r = 50, b = 50, t = 50, pad = 5)) %>% 
@@ -1045,16 +1065,16 @@ It looks like the correlation is even lower for New Hampshire. We have reason to
 # Validation
 Since Mr. Yang dropped out of the race before the Massachusetts primary, there is unfortunately no way to validate the predictions of the current model. The question remains as to whether this method of predicting support could provide a significant bump to the success of canvassing campaigns. Fortunately, with some revisions to the input variables, we can run the model for Bernie Sanders who is still in the 2020 race and for whom primary voting results are available in Massachusetts.
 
-## Replace Response Variable and Supporter Numbers
+## Update Variables
 The response variable in the training model will be the number of Sanders voters in the 2020 NH primary
-```{r 'Create new rds directory', eval = F}
+```{r 'Create new rds directory', eval = c(1,2)}
 .candidate <- 'Sanders'
 saveRDS(.candidate, "rds/candidate.rds")
 dir.create(paste0(c("rds",.candidate), collapse = "/"))
 ```
 
 ```{r 'Load Variables'}
-.nf <- readRDS("rds/newfile.rds")
+.nf <- readRDS("rds/candidate.rds")
 rv <- list(ma = NA, nh = NA)
 source("nh_primary_20.R")
 rv$nh <- .per_support
@@ -1201,6 +1221,7 @@ saveRDS(shp, paste0(c("rds" , .nf, "shapes.rds"), collapse = "/"))
 shp <- readRDS(paste0(c("rds" , .nf, "shapes.rds"), collapse = "/"))
 ```
 
+#### Recompute WP values to Zip codes
 ```{r 'Compute distances for new WPs', eval = F}
 rstudioapi::jobRunScript("centroid_distance.R", name = "Centroid Distance", workingDir = getwd(), exportEnv = .GlobalEnv)
 ```
@@ -1239,6 +1260,9 @@ Let's make sure the results are consistent and account for missing values.
 summary(shp$ma$zip[,c("support_20", "total_16", "support_16")])
 summary(shp$nh$zip[,c("support_20", "total_16", "support_16")])
 ```
+
+### Complete the new datasets
+
 ```{r 'Load training and test data', eval = F}
 mod <- readRDS("rds/mod.rds")
 ```
@@ -1268,9 +1292,9 @@ by = "zip"
   select(support_20, ends_with("16"), everything())
 mod_bernie$test <- .test %>% select(-zip)
 mod_bernie$test_zip <- .test$zip
-```+
+```
 
-#### Build `r .candidate` model
+### Build `r .candidate` model
 ```{r 'Save Bernie mod', eval = F}
 saveRDS(mod_bernie, paste0(c("rds" , .nf, "mod.rds"), collapse  = "/"))
 ```
@@ -1278,27 +1302,53 @@ saveRDS(mod_bernie, paste0(c("rds" , .nf, "mod.rds"), collapse  = "/"))
 rstudioapi::jobRunScript(path = "manual_mod.R", name = "Model Build", workingDir = here::here(), exportEnv = "R_GlobalEnv")
 ```
 
-#### Validation
+
+### Validate Predictions
 ```{r 'Compare to actual results'}
-readRDS(paste0(c("rds" , .nf, "mod.rds"), collapse  = "/"))
-readRDS(paste0(c("rds" , .nf, "predictions.rds"), collapse  = "/"))
-.cor <- cor(y = mod$test$support_20, do.call(cbind, predictions) %>% rowMeans())
-.mae <- caret::MAE(mod$test$support_20, do.call(cbind, predictions) %>% rowMeans())
+mod <- readRDS(paste0(c("rds", .nf, "mod.rds"), collapse = "/"))
+predictions <- readRDS(paste0(c("rds", .nf, "predictions.rds"), collapse = "/"))[-1]
+.preds <- do.call(cbind, predictions) %>% rowMeans()
+.cor <- cor(y = mod$test$support_20, .preds)
+.mae <- caret::MAE(mod$test$support_20, .preds)
 htmltools::tags$p("What is the spread of error?")
-data.frame(error = mod$test$support_20 - do.call(cbind, predictions) %>% rowMeans()) %>% 
-  mutate(x = seq(range(error)[1], range(error)[2], length.out = nrow(.))) %>% 
-  mutate(y = dnorm(x, mean(error), sd(error))) %>% 
-ggplot(aes(x = error, y = ..density..)) + 
-  geom_histogram(binwidth = .005, fill = "grey", color = "black") +
+data.frame(error = mod$test$support_20 - .preds) %>%
+  mutate(x = seq(range(error)[1], range(error)[2], length.out = nrow(.))) %>%
+  mutate(y = dnorm(x, mean(error), sd(error))) %>%
+  ggplot(aes(x = error, y = ..density..)) +
+  geom_histogram(
+    binwidth = .005,
+    fill = "grey",
+    color = "black"
+  ) +
   geom_line(aes(x = x, y = y), color = "blue") +
-  ggtitle("Spread of Predictive Error")+
-  theme(plot.title = element_text(hjust = .5),plot.subtitle = element_text(hjust = .5))
+  ggtitle("Spread of Predictive Error") +
+  theme(
+    plot.title = element_text(hjust = .5),
+    plot.subtitle = element_text(hjust = .5)
+  )
 ```
-As can be observed from the plot above, the vast majority or error lies between `r -round(.mae,3)` and `r round(.mae, 3)`, this is pretty significant given the threshold for delegates is 15%, but if we take a look at the Pearson's R: `r round(.cor,3)`, we find a relatively large correlation between the predictions and the actual votes. Though the spread of error may be relatively high, the correlation coefficient indicates that we can make comparisons between zip codes reliably to optimize the targeting of canvassing and mailing efforts.
+
+# Conclusion
+As can be observed from the plot above, the vast majority or predictive error lies between `r -round(.mae,3)` and `r round(.mae, 3)`, this is pretty significant given the threshold for delegates is 15%, but if we take a look at the Pearson's R: `r round(.cor,3)`, we find a relatively large correlation between the predictions and the actual votes. 
+If we take a look at the direct correlation between the reported support in 2020 and the support in 2016 at the zip code level ($r=`r round(cor(mod$test$support_20, mod$test$support_16), 3)`$), we find a comparable correlation, thus we might guess that the model is using this feature as an important predictor. It's notable that the correlation coefficient is so high compared to that of the direct correlation at the precinct level ($r=`r round(cor(shp$ma$wp$support_20, shp$ma$wp$support_16), 3)`$). This could be an artifact of aggregation, in that a few precincts may be aggregated into a single zip code, reducing the variance in the proportion of supporters that is possible in precincts with few voters. Or it could be a systematic error of some kind? I'm open to input, so if you find something in this analysis that seems like it could explain this phenomenon, please [contact me!](http:://themindful.life/contact)
+
+Though the spread of error may be relatively high, the correlation coefficient indicates that we can make comparisons between zip codes based on the predictions with decent reliability to optimize the targeting of canvassing and mailing efforts.
+
+Overall, it's safe to assume that the predictive model works quite well for repeat campaigns with data available from previous campaign results. Since Yang dropped out for the primary in MA, it's impossible to validate the model for an initial campaign that makes use of supporter numbers aggregated by zip code from mailing lists. 
+
+Future work could explore an initial campaign with supporter data *and verified results* for validation to determine if campaign canvassing can be optimized prior to a vote based on using supporters in a mailing list database as a predictor.
+
 
 I hope this analysis was interesting and educational! 
 If you have comments, questions, feedback or otherwise just want to get in touch, please feel free to [contact me.](http:://themindful.life/contact)
 If the work herein is comparable to a task that might be useful to you, your campaign, or organization, I am currently open to work offers! Please feel free to [reach out to me](http:://themindful.life/contact).
 
 
+```{r 'Minify the output', eval = F, echo = F, results='hidden'}
+.b <- vector("numeric")
+.b[1] <- file.size("~/TheMindful.Life/r/godaddy/CanvassML/Creating_targets.html")
+minifyHTML::minifyHTML(paste0(readLines("~/TheMindful.Life/r/godaddy/CanvassML/Creating_targets.html"), collapse = "\n")) %>% write("~/TheMindful.Life/r/godaddy/CanvassML/Creating_targets.html")
+.b[2] <- file.size("~/TheMindful.Life/r/godaddy/CanvassML/Creating_targets.html")
+R.utils::hsize(abs(diff(.b)))
+```
 
